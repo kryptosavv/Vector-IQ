@@ -4,10 +4,22 @@ import pandas as pd
 from datetime import timedelta, date
 import os
 
-# Set page configuration
-st.set_page_config(page_title="ATH & Yearly High Scanner", layout="wide")
+# --- 1. CONFIGURATION & BRANDING ---
+st.set_page_config(
+    page_title="NSE Vanguard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 1. DATA LOADING LAYER (Cached) ---
+# Custom CSS for branding
+st.markdown("""
+    <style>
+    .main-title {font-size: 3em; font-weight: bold; color: #FF4B4B;}
+    .sub-title {font-size: 1.2em; color: #555;}
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 2. DATA LOADING LAYER (Cached) ---
 @st.cache_data(show_spinner=False, ttl=3600) # Cache data for 1 hour
 def download_data(tickers):
     """
@@ -17,9 +29,8 @@ def download_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
-    # yfinance requires a space-separated string or list.
-    # We pass it through directly.
     try:
+        # Batch download from Yahoo Finance
         data = yf.download(
             tickers,
             period="max",
@@ -29,10 +40,10 @@ def download_data(tickers):
         )
         return data
     except Exception as e:
-        st.error(f"Download failed: {e}")
+        st.error(f"Download API failed: {e}")
         return pd.DataFrame()
 
-# --- 2. LOGIC LAYER (Processing) ---
+# --- 3. LOGIC LAYER (Processing) ---
 def process_single_ticker(ticker, df, start_date, end_date):
     """
     Analyzes a single ticker dataframe for ATH and Yearly High breakouts.
@@ -63,7 +74,7 @@ def process_single_ticker(ticker, df, start_date, end_date):
         ath_breakouts = range_df[range_df['High'] > range_df['Prev_ATH']]
         yh_breakouts = range_df[range_df['High'] > range_df['Prev_Yearly_High']]
 
-        # 4. Format Result
+        # 4. Format Result Helper
         def format_result(breakout_df):
             if breakout_df.empty: return None
             
@@ -73,7 +84,6 @@ def process_single_ticker(ticker, df, start_date, end_date):
             b_price = first['High']
             
             # Safe latest price fetch
-            # We use the original full DF to get the absolute latest data available
             try:
                 latest_valid = df.dropna(subset=['Close']).iloc[-1]
                 latest_price = latest_valid['Close']
@@ -92,8 +102,7 @@ def process_single_ticker(ticker, df, start_date, end_date):
 
         return format_result(ath_breakouts), format_result(yh_breakouts)
 
-    except Exception as e:
-        # print(f"Error processing {ticker}: {e}")
+    except Exception:
         return None, None
 
 def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
@@ -101,12 +110,15 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     Orchestrates the download and processing.
     """
     # 1. Download Data (Cached)
-    status_text.text("Downloading/Loading market data... (First run may take time)")
-    # Convert list to tuple for caching hashing stability if needed, though list works in modern Streamlit
+    status_text.text("🔌 Connecting to NSE Server... (Downloading Data)")
+    
     raw_data = download_data(tickers)
     
+    # --- CRITICAL ERROR PROTECTION ---
     if raw_data.empty:
+        st.error("⚠️ Data download failed or returned empty. Please check your internet or retry.")
         return [], []
+    # ---------------------------------
 
     ath_list = []
     yh_list = []
@@ -126,13 +138,11 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
         progress_bar.progress((idx + 1) / total)
         status_text.text(f"Analyzing {ticker}...")
         
-        # Extract Ticker DF
         try:
+            # Extract Ticker DF
             if total == 1:
                 df = raw_data.copy()
             else:
-                # Use xs or direct access depending on structure
-                # yfinance group_by='ticker' creates (Ticker, OHLC)
                 df = raw_data[ticker].copy()
             
             # Run Logic
@@ -146,7 +156,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             
     return ath_list, yh_list
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 4. HELPER FUNCTIONS ---
 def load_tickers():
     file_path = "NiftyTM.txt" 
     tickers = []
@@ -168,51 +178,57 @@ def generate_tradingview_batches(data_list, batch_size=30):
     batches = [tv_tickers[i:i + batch_size] for i in range(0, len(tv_tickers), batch_size)]
     return [", ".join(batch) for batch in batches]
 
-# --- 4. UI SETUP ---
-st.title("🚀 ATH & Yearly High Scanner")
+# --- 5. UI SETUP ---
 
-TICKER_LIST = load_tickers()
+# Sidebar for Inputs
+with st.sidebar:
+    st.title("⚙️ Configuration")
+    TICKER_LIST = load_tickers()
+    
+    st.divider()
+    
+    st.write("### 📅 Time Period")
+    preset = st.radio(
+        "Select Range:", 
+        ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Custom"], 
+    )
+
+    today = date.today()
+
+    if preset == "Today":
+        start_d = today
+        end_d = today
+    elif preset == "Yesterday":
+        start_d = today - timedelta(days=1)
+        end_d = start_d
+    elif preset == "This Week":
+        start_d = today - timedelta(days=today.weekday())
+        end_d = today
+    elif preset == "Last Week":
+        start_current = today - timedelta(days=today.weekday())
+        start_d = start_current - timedelta(days=7)
+        end_d = start_current - timedelta(days=1)
+    elif preset == "This Month":
+        start_d = date(today.year, today.month, 1)
+        end_d = today
+    else: # Custom
+        start_d = st.date_input("Start", value=today - timedelta(days=7))
+        end_d = st.date_input("End", value=today)
+        
+    st.divider()
+    run_btn = st.button("🚀 Run Vanguard Scan", type="primary", use_container_width=True)
+
+# Main Area
+st.markdown('<div class="main-title">NSE Vanguard</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Advanced Momentum & Breakout Scanner</div>', unsafe_allow_html=True)
+st.caption(f"🔎 Scanning Range: **{start_d}** to **{end_d}**")
+st.divider()
 
 if not TICKER_LIST:
-    st.info("Upload 'NiftyTM.txt' to start.")
+    st.info("👈 Please upload 'NiftyTM.txt' in the sidebar to start.")
     st.stop()
 
-# --- DATE PRESETS ---
-st.write("### 📅 Select Time Period")
-preset = st.radio(
-    "Quick Select:", 
-    ["Today", "Yesterday", "This Week", "Last Week", "This Month", "Custom"], 
-    horizontal=True
-)
-
-today = date.today()
-
-if preset == "Today":
-    start_d = today
-    end_d = today
-elif preset == "Yesterday":
-    # If today is Monday, Yesterday is Sunday (market closed), so we might want Friday.
-    # For simplicity, we just do timedelta(1) and rely on data existence.
-    start_d = today - timedelta(days=1)
-    end_d = start_d
-elif preset == "This Week":
-    start_d = today - timedelta(days=today.weekday())
-    end_d = today
-elif preset == "Last Week":
-    start_current = today - timedelta(days=today.weekday())
-    start_d = start_current - timedelta(days=7)
-    end_d = start_current - timedelta(days=1)
-elif preset == "This Month":
-    start_d = date(today.year, today.month, 1)
-    end_d = today
-else: # Custom
-    c1, c2 = st.columns(2)
-    with c1: start_d = st.date_input("Start Date", value=today - timedelta(days=7))
-    with c2: end_d = st.date_input("End Date", value=today)
-
-st.caption(f"🔎 Scanning: **{start_d}** to **{end_d}**")
-
-if st.button("Start Scan", type="primary"):
+if run_btn:
     bar = st.progress(0)
     status = st.empty()
     
@@ -223,18 +239,26 @@ if st.button("Start Scan", type="primary"):
     status.empty()
     
     # Display Results
-    tab1, tab2 = st.tabs(["🚀 All-Time Highs", "📈 Yearly Highs"])
+    tab1, tab2 = st.tabs(["🚀 All-Time Highs (ATH)", "📈 Yearly Highs (52W)"])
 
-    # Helper to display tab content
     def show_tab_content(results, label):
         if results:
             st.success(f"Found {len(results)} {label} Breakouts!")
             df = pd.DataFrame(results).sort_values(by="Breakout Date", ascending=False)
-            st.dataframe(df, use_container_width=True, hide_index=True)
             
-            st.markdown("---")
-            st.subheader(f"📋 TradingView Watchlist ({label})")
+            # Interactive Table
+            st.dataframe(
+                df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Return (%)": st.column_config.NumberColumn(format="%.2f %%"),
+                    "Breakout Price": st.column_config.NumberColumn(format="₹ %.2f"),
+                    "CMP": st.column_config.NumberColumn(format="₹ %.2f"),
+                }
+            )
             
+            st.markdown("### 📋 TradingView Watchlist")
             batches = generate_tradingview_batches(results, 30)
             for i, batch in enumerate(batches):
                 st.caption(f"Batch {i+1} ({len(batch.split(','))} stocks)")
