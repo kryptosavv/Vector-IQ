@@ -4,6 +4,9 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta, date
 import os
+import time
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # --- 1. CONFIGURATION & BRANDING ---
 st.set_page_config(
@@ -13,6 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# --- CSS FOR ROUNDED CORNERS & CLEAN UI ---
 st.markdown("""
     <style>
     .main-title {font-size: 3em; font-weight: bold; color: #FF4B4B;}
@@ -26,16 +30,21 @@ st.markdown("""
         font-weight: bold;
         margin-bottom: 20px;
     }
-    /* Green Background for Found X Metrics */
     .metric-box {
         padding: 10px;
-        background-color: #c3e6cb; /* Darker Green */
-        color: #0f5132; /* Darker Text */
+        background-color: #c3e6cb; 
+        color: #0f5132; 
         border-radius: 5px;
         margin-bottom: 10px;
         font-weight: bold;
         text-align: center;
         border: 1px solid #b1dfbb;
+    }
+    /* ROUNDED CORNERS FOR PLOTLY TILES */
+    .stPlotlyChart {
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
     }
     </style>
 """, unsafe_allow_html=True)
@@ -46,13 +55,13 @@ def download_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
-    download_list = tickers + ["^NSEI"]
-    download_list = list(set(download_list))
+    fixed_tickers = [t if t.endswith('.NS') or t == "^NSEI" else f"{t}.NS" for t in tickers]
+    download_list = list(set(fixed_tickers + ["^NSEI"]))
     
     try:
         data = yf.download(
             download_list,
-            period="2y", 
+            period="5y",
             group_by='ticker',
             threads=True,
             progress=False
@@ -62,7 +71,73 @@ def download_data(tickers):
         st.error(f"Download API failed: {e}")
         return pd.DataFrame()
 
-# --- 3. METRIC ENGINE ---
+# --- 3. HELPER: REGIME TILE RENDERER (ROUNDED, 5D, NON-OBSTRUCTING) ---
+def render_regime_tile(title, value, series, threshold, positive=True, suffix=""):
+    # 1. Determine Regime Color
+    if positive:
+        regime_color = "#00FF88" if value >= threshold else "#FF4B4B"
+    else:
+        regime_color = "#00FF88" if value <= threshold else "#FF4B4B"
+
+    # 2. Slice Data (Last 5 Days)
+    series_5d = series.tail(5)
+    dates_5d = series_5d.index.strftime('%Y-%m-%d').tolist() if hasattr(series_5d.index, 'strftime') else list(range(len(series_5d)))
+    
+    # 3. Previous Value for Delta
+    prev_val = series.iloc[-2] if len(series) >= 2 else value
+
+    # 4. Create Subplots (Row 1: Text, Row 2: Sparkline)
+    # Increased vertical_spacing to prevent obstruction
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.65, 0.35], # 65% for Text, 35% for Chart
+        vertical_spacing=0.15,    # Gap between text and chart
+        specs=[[{"type": "indicator"}], [{"type": "xy"}]]
+    )
+    
+    # Row 1: Indicator (Title, Value, Delta)
+    fig.add_trace(go.Indicator(
+        mode="number+delta",
+        value=value,
+        number={"suffix": suffix, "font": {"size": 36, "color": regime_color, "family": "Arial Black"}},
+        delta={
+            'reference': prev_val, 
+            'relative': False, 
+            'position': "right",
+            'valueformat': '.2f',
+            'font': {'size': 16}
+        },
+        title={"text": title.upper(), "font": {"size": 13, "color": "gray", "family": "Arial"}},
+        align="left"
+    ), row=1, col=1)
+    
+    # Row 2: Sparkline (5 Days)
+    fig.add_trace(go.Scatter(
+        x=dates_5d,
+        y=series_5d,
+        mode='lines+markers',
+        line=dict(width=3, color=regime_color),
+        marker=dict(size=5, color=regime_color),
+        fill='tozeroy',
+        fillcolor=f"rgba{tuple(int(regime_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.1,)}",
+        hovertemplate='<b>%{x}</b><br>Val: %{y:.2f}<extra></extra>' 
+    ), row=2, col=1)
+
+    # 5. Tile Layout
+    fig.update_layout(
+        height=125, 
+        margin=dict(l=20, r=20, t=25, b=15),
+        template="plotly_dark",
+        paper_bgcolor='#111827', # Tile Background
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(visible=False, fixedrange=True),
+        yaxis=dict(visible=False, fixedrange=True),
+        showlegend=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+# --- 4. METRIC ENGINE ---
 def calculate_advanced_metrics(df, bench_series):
     if df.empty or len(df) < 260: return None
 
@@ -81,13 +156,9 @@ def calculate_advanced_metrics(df, bench_series):
     high_52w = high.rolling(252).max()
     low_52w = low.rolling(252).min()
     h52 = high_52w.iloc[-1]
-    l52 = low_52w.iloc[-1]
 
-    # --- A) TREND STRENGTH SCORE (0-100) ---
-    s50 = sma50.iloc[-1]
-    s150 = sma150.iloc[-1]
-    s200 = sma200.iloc[-1]
-    
+    # --- Trend Scores ---
+    s50, s150, s200 = sma50.iloc[-1], sma150.iloc[-1], sma200.iloc[-1]
     d50 = (c - s50) / s50
     d150 = (c - s150) / s150
     d200 = (c - s200) / s200
@@ -102,27 +173,25 @@ def calculate_advanced_metrics(df, bench_series):
     
     trend_score = ma_dist_score + alignment_score + slope_score
 
-    # --- B) RS PERCENTAGE (Score 0-100) ---
+    # --- RS ---
     rs_line = close / bench_series
     rs_curr = rs_line.iloc[-1]
     rs_prev_20 = rs_line.iloc[-20]
     rs_mom = (rs_curr - rs_prev_20) / rs_prev_20 if rs_prev_20 > 0 else 0
     rs_mom_norm = min(max(rs_mom * 10, 0), 1) * 100 
-    
     rs_raw = rs_curr
 
-    # --- C) TIGHTNESS % (Score 0-100) ---
+    # --- Tightness ---
     def get_range(window):
         h = high.tail(window).max()
         l = low.tail(window).min()
         return (h - l) / h if h > 0 else 1
 
-    r20 = get_range(20)
-    r60 = get_range(60)
+    r20, r60 = get_range(20), get_range(60)
     compression_ratio = r20 / r60 if r60 > 0 else 1
     tight_score = min(max((1 - compression_ratio) * 100, 0), 100)
 
-    # --- D) VOL DRY SCORE (0-100) ---
+    # --- Vol Dry ---
     v = volume.iloc[-1]
     v_5d = volume.tail(5).mean()
     v_50d = volume.rolling(50).mean().iloc[-1]
@@ -138,23 +207,19 @@ def calculate_advanced_metrics(df, bench_series):
         
     vol_score = dry_score + exp_score
 
-    # --- E) NEAR BREAKOUT (Score 0-100) ---
-    if h52 > 0:
-        dist = (h52 - c) / h52
-        readiness_score = min(max((1 - (dist / 0.10)) * 100, 0), 100)
-    else: readiness_score = 0
+    # --- Near Breakout ---
+    readiness_score = min(max((1 - ((h52 - c) / h52 / 0.10)) * 100, 0), 100) if h52 > 0 else 0
 
-    # --- F) FAILURE RISK (0-100) ---
+    # --- Failure Risk ---
     failure_score = 0
     if vol_expansion < 1.2: failure_score += 30
-    h_day = high.iloc[-1]
-    l_day = low.iloc[-1]
+    h_day, l_day = high.iloc[-1], low.iloc[-1]
     if (h_day - l_day) > 0 and ((c - l_day)/(h_day - l_day)) < 0.5: failure_score += 20
     sma20 = close.rolling(20).mean().iloc[-1]
     if sma20 > 0 and ((c - sma20)/sma20) > 0.15: failure_score += 20
     failure_risk = min(failure_score, 100)
 
-    # --- G) PERSISTENCE (0-100) ---
+    # --- Persistence ---
     persist_score = 0
     up_days = (close.diff() > 0).tail(20).sum()
     persist_score += (up_days / 20) * 40
@@ -165,6 +230,19 @@ def calculate_advanced_metrics(df, bench_series):
     persistence = min(persist_score, 100)
 
     breakout_20d = c > high.rolling(20).max().shift(1).iloc[-1]
+
+    # --- Stage 2 ---
+    stage2_trend = (c > s200) and (s50 > s200) and (s200 > sma200.iloc[-20])
+    breakout_50d = c > high.rolling(50).max().shift(1).iloc[-1]
+    breakout_trigger = breakout_20d or breakout_50d
+    extension = (c - s200) / s200 if s200 > 0 else 0
+    
+    # WIDENED EXTENSION LOGIC (0.02 to 0.20)
+    not_extended = (extension > 0.02) and (extension < 0.20)
+    
+    vol_confirm = vol_expansion >= 1.2
+
+    stage2_candidate = stage2_trend and breakout_trigger and not_extended and vol_confirm
 
     return {
         "Ticker": "",
@@ -178,10 +256,72 @@ def calculate_advanced_metrics(df, bench_series):
         "Failure Risk": int(failure_risk),
         "Persistence": int(persistence),
         "Vol Expansion": round(vol_expansion, 2),
-        "Breakout 20D": breakout_20d
+        "Breakout 20D": breakout_20d,
+        "Stage2_Candidate": stage2_candidate
     }
 
-# --- 4. BREADTH ENGINE ---
+# --- 5. EVENT DATE METRICS ENGINE ---
+def calculate_metrics_on_date(df, bench_series, event_date):
+    if bench_series is None or bench_series.empty:
+        return None
+
+    df_event = df.loc[:event_date].copy()
+    if len(df_event) < 260: return None
+
+    close = df_event['Close']
+    high = df_event['High']
+    low = df_event['Low']
+    volume = df_event['Volume']
+
+    c = close.iloc[-1]
+
+    v = volume.iloc[-1]
+    v50 = volume.rolling(50).mean().iloc[-1]
+    vol_exp = v / v50 if (v50 > 0 and not np.isnan(v50)) else 0
+
+    failure = 0
+    if vol_exp < 1.2: failure += 30
+    h_day, l_day = high.iloc[-1], low.iloc[-1]
+    if (h_day - l_day) > 0 and ((c - l_day)/(h_day - l_day)) < 0.5: failure += 20
+    sma20 = close.rolling(20).mean().iloc[-1]
+    if sma20 > 0 and ((c - sma20)/sma20) > 0.15: failure += 20
+    failure = min(failure, 100)
+
+    persist = 0
+    up_days = (close.diff() > 0).tail(20).sum()
+    persist += (up_days / 20) * 40
+    higher_highs = (high.diff() > 0).tail(20).sum()
+    persist += min((higher_highs / 20) * 30, 30)
+    if vol_exp > 1.2: persist += 10
+    persist = min(persist, 100)
+
+    try:
+        bench_aligned = bench_series.reindex(close.index).ffill()
+        rs_line = close / bench_aligned
+        
+        if len(rs_line) >= 20:
+            rs_curr = rs_line.iloc[-1]
+            rs_prev = rs_line.iloc[-20]
+            rs_mom_ratio = rs_curr / rs_prev if rs_prev > 0 else 1.0
+            rs_mom_pct = (rs_curr - rs_prev) / rs_prev if rs_prev > 0 else 0
+            rs_score = min(max(rs_mom_pct * 10, 0), 1) * 100 
+        else:
+            rs_mom_ratio = 1.0
+            rs_score = 50 
+    except:
+        rs_mom_ratio = 1.0
+        rs_score = 50
+    
+    return {
+        "Event Price": c,
+        "Event Vol Expansion": round(vol_exp, 2),
+        "Event Failure Risk": int(failure),
+        "Event Persistence": int(persist),
+        "Event RS Mom": round(rs_mom_ratio, 4),
+        "Event RS Score": int(rs_score)
+    }
+
+# --- 6. BREADTH ENGINE ---
 def calculate_market_breadth(raw_data, start_date, end_date):
     if isinstance(raw_data.columns, pd.MultiIndex):
         stock_data = raw_data.drop(columns=["^NSEI"], level=0, errors='ignore')
@@ -210,16 +350,34 @@ def calculate_market_breadth(raw_data, start_date, end_date):
         net_ad = advances - declines
         ad_line = net_ad.cumsum() 
         
+        # --- BREAKOUT DEFINITIONS ---
         pivot_20 = highs.rolling(20).max().shift(1)
         is_breakout = (closes > pivot_20)
-        future_close = closes.shift(-5) 
-        is_successful_breakout = (future_close > pivot_20) & is_breakout
+        
+        # --- NEW: 10D CONFIRMED SUCCESS (BACKWARD LOOKING) ---
+        breakout_10d_ago = is_breakout.shift(10)
+        ret_10d = closes.pct_change(10)
+        successful_breakout = breakout_10d_ago & (ret_10d > 0)
+        
+        daily_bo_attempts = breakout_10d_ago.sum(axis=1)
+        daily_bo_successes = successful_breakout.sum(axis=1)
+        
+        # FIX 1 & 5: MIN PERIODS + ZERO DIV CHECK
+        rolling_attempts = daily_bo_attempts.rolling(10, min_periods=3).sum()
+        rolling_successes = daily_bo_successes.rolling(10, min_periods=3).sum()
+        
+        rolling_bo_success_series = np.where(
+            rolling_attempts > 0,
+            (rolling_successes / rolling_attempts) * 100,
+            np.nan
+        )
+        rolling_bo_success_series = pd.Series(
+            rolling_bo_success_series,
+            index=closes.index
+        )
 
         break_below_20dma = (closes < sma20) & (closes.shift(1) > sma20.shift(1))
-        ret_20d = closes.pct_change(20)
-        positive_20d = (ret_20d > 0)
-        thrust_20d = (ret_20d > 0.05)
-
+        
         mask = (closes.index.date >= start_date) & (closes.index.date <= end_date)
         valid_dates = closes.index[mask]
         
@@ -237,124 +395,208 @@ def calculate_market_breadth(raw_data, start_date, end_date):
                 x = np.arange(len(y))
                 if len(y) == 20:
                     slope = np.polyfit(x, y, 1)[0]
-                    slope_val = (slope / universe_size) * 100 
+                    # FIX 3: SCALE INVARIANT SLOPE (Normalized by AD level 20d ago)
+                    denom = abs(ad_line.iloc[idx_loc-20])
+                    slope_val = (slope / denom) * 100 if denom > 0 else 0
 
             if idx_loc >= 20:
                 ad_change_20d = ad_line.iloc[idx_loc] - ad_line.iloc[idx_loc - 20]
             else:
                 ad_change_20d = np.nan
 
-            bo_count = is_breakout.loc[d].sum()
-            if idx_loc <= len(closes.index) - 6 and bo_count > 0:
-                bo_success_count = is_successful_breakout.loc[d].sum()
-                bo_rate = (bo_success_count / bo_count) * 100
-            else:
-                bo_rate = np.nan
-
-            breakout_density = (bo_count / total_valid_stocks) * 100
             nh = is_new_high.loc[d].sum()
             nl = is_new_low.loc[d].sum()
+            
+            bo_val = rolling_bo_success_series.loc[d]
+            bo_val_safe = round(bo_val, 2) if not np.isnan(bo_val) else np.nan
 
             breadth_records.append({
                 "Date": d.date(),
-                "% > 20 DMA": round((above_20dma.loc[d].sum() / total_valid_stocks) * 100, 2),
-                "% > 200 DMA": round((above_200dma.loc[d].sum() / total_valid_stocks) * 100, 2),
-                
-                "New Highs": int(nh),
-                "New Lows": int(nl),
-                "Net New Highs": int(nh - nl),
-                
-                "AD Line": int(ad_line.loc[d]),
-                "AD Slope 20D": round(slope_val, 2) if not np.isnan(slope_val) else np.nan,
+                "% Above 20 DMA": round((above_20dma.loc[d].sum() / total_valid_stocks) * 100, 2),
+                "% Above 200 DMA": round((above_200dma.loc[d].sum() / total_valid_stocks) * 100, 2),
+                "New Highs": int(nh), "New Lows": int(nl), "Net New Highs": int(nh - nl),
+                "AD Line": int(ad_line.loc[d]), "AD Slope 20D": round(slope_val, 2) if not np.isnan(slope_val) else np.nan,
                 "AD Change 20D": round(ad_change_20d, 2) if not np.isnan(ad_change_20d) else np.nan,
-
-                "Breakout Count": int(bo_count),
-                "Breakout Density %": round(breakout_density, 2),
-                "Breakout Success 5D": round(bo_rate, 1) if not np.isnan(bo_rate) else np.nan,
-                
-                "% Breaking < 20DMA": round((break_below_20dma.loc[d].sum() / total_valid_stocks) * 100, 1),
-                "% Positive 20D": round((positive_20d.loc[d].sum() / total_valid_stocks) * 100, 1),
-                "% > 5% in 20D": round((thrust_20d.loc[d].sum() / total_valid_stocks) * 100, 1)
+                "Rolling BO Success 10D": bo_val_safe,
+                "% Breaking < 20 DMA": round((break_below_20dma.loc[d].sum() / total_valid_stocks) * 100, 1)
             })
             
         return breadth_records
-        
     except Exception as e:
         return []
 
-# --- 5. SCANNER ORCHESTRATOR ---
+# --- 7. SCANNER ORCHESTRATOR ---
 def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     status_text.text("🔌 Downloading Data...")
     raw_data = download_data(tickers)
     
     if raw_data.empty:
-        st.error("⚠️ Data download failed.")
-        return [], [], [], [] 
+        st.error("⚠️ Data download failed. Please check your internet or ticker list.")
+        return [], [], [], [], [] 
     
     status_text.text("📊 Calculating Breadth...")
     breadth_data = calculate_market_breadth(raw_data, start_date, end_date)
     
     try:
-        bench_data = raw_data["^NSEI"]['Close'] if isinstance(raw_data.columns, pd.MultiIndex) and "^NSEI" in raw_data.columns.levels[0] else pd.Series()
+        if isinstance(raw_data.columns, pd.MultiIndex):
+            if "^NSEI" in raw_data.columns.levels[0]:
+                bench_data = raw_data["^NSEI"]['Close']
+            else: bench_data = pd.Series()
+        else: bench_data = pd.Series()
     except: bench_data = pd.Series()
 
-    raw_results = []
+    ath_results = []
+    pop_results = []
+    stage2_results = []
+    rocket_results = []
+    
     if isinstance(raw_data.columns, pd.MultiIndex):
         downloaded_tickers = list(set([col[0] for col in raw_data.columns]))
-    else: downloaded_tickers = tickers
+    else: downloaded_tickers = [] 
+        
     if "^NSEI" in downloaded_tickers: downloaded_tickers.remove("^NSEI")
     
+    if not downloaded_tickers:
+        st.warning("⚠️ No stock data found. Check if tickers have '.NS' suffix.")
+        return [], [], [], breadth_data, []
+
     total = len(downloaded_tickers)
+    
     for idx, ticker in enumerate(downloaded_tickers):
         progress_bar.progress((idx + 1) / total)
         status_text.text(f"Analyzing {ticker}...")
         
         try:
-            df = raw_data[ticker].copy() if isinstance(raw_data.columns, pd.MultiIndex) else raw_data.copy()
-            df = df.loc[:end_date]
-            bench_aligned = bench_data.reindex(df.index).ffill()
+            df = raw_data[ticker].copy()
+            if df.empty or len(df) < 260: continue
+
+            # --- PRE-CALCULATE INDICATORS (FULL HISTORY) ---
+            df['SMA50'] = df['Close'].rolling(50).mean()
+            df['SMA150'] = df['Close'].rolling(150).mean()
+            df['SMA200'] = df['Close'].rolling(200).mean()
+            df['High_20'] = df['High'].rolling(20).max().shift(1)
+            df['High_50'] = df['High'].rolling(50).max().shift(1)
+            df['Vol_MA50'] = df['Volume'].rolling(50).mean()
+            df['Prev_ATH'] = df['High'].expanding().max().shift(1)
+            df['SMA200_Rising'] = df['SMA200'] > df['SMA200'].shift(20)
             
-            metrics = calculate_advanced_metrics(df, bench_aligned)
-            if metrics:
-                metrics["Ticker"] = ticker.replace(".NS", "")
-                df['Prev_ATH'] = df['High'].expanding().max().shift(1)
-                mask_range = (df.index.date >= start_date) & (df.index.date <= end_date)
-                range_df = df.loc[mask_range]
-                
-                metrics["Is ATH"] = False
-                if not range_df.empty:
-                    ath_break = range_df[range_df['High'] > range_df['Prev_ATH']]
-                    if not ath_break.empty:
-                        metrics["Is ATH"] = True
-                        metrics["Breakout Date"] = ath_break.index[0].date()
-                        evt_price = ath_break.iloc[0]['High']
-                        metrics["Return"] = ((metrics["Price"] - evt_price) / evt_price) * 100
-
-                raw_results.append(metrics)
-        except: continue
-
-    if not raw_results: return [], [], [], breadth_data
-    
-    df_res = pd.DataFrame(raw_results)
-    
-    df_res['RS Percentile'] = df_res['RS Raw'].rank(pct=True) * 100
-    df_res['RS %'] = ((df_res['RS Percentile'] * 0.7) + (df_res['RS Mom Score'] * 0.3)).astype(int)
-    
-    df_res['Rocket Score'] = (
-        0.30 * df_res['Trend Score'] +
-        0.25 * df_res['RS %'] +
-        0.20 * df_res['Tightness %'] +
-        0.15 * df_res['Vol Dry Score'] +
-        0.10 * df_res['Near Breakout']
-    ).round(2)
-    
-    ath_list = df_res[df_res['Is ATH'] == True].to_dict('records')
-    rocket_list = df_res[df_res['Rocket Score'] >= 50].to_dict('records')
-    breakout_list = df_res[(df_res['Breakout 20D']) & (df_res['Vol Expansion'] > 1.2)].to_dict('records')
+            # --- DATE SLICE ---
+            mask_range = (df.index.date >= start_date) & (df.index.date <= end_date)
+            range_df = df.loc[mask_range]
             
-    return ath_list, rocket_list, breakout_list, breadth_data
+            if range_df.empty: continue
 
-# --- 6. STYLING LOGIC ---
+            # --- 1. ATH CHECK ---
+            ath_break = range_df[range_df['Close'] > range_df['Prev_ATH']]
+            
+            if not ath_break.empty:
+                for event_date in ath_break.index:
+                    event_metrics = calculate_metrics_on_date(df, bench_data, event_date)
+                    if event_metrics:
+                        record = {
+                            "Ticker": ticker.replace(".NS", ""),
+                            "ATH Date": event_date.date(),
+                            "ATH_Event_Price": event_metrics["Event Price"],
+                            "LTP": df.iloc[-1]['Close'],
+                            "ATH_Vol_Expansion": event_metrics["Event Vol Expansion"],
+                            "ATH_Failure_Risk": event_metrics["Event Failure Risk"],
+                            "ATH_Persistence": event_metrics["Event Persistence"],
+                            "RS Rating": event_metrics["Event RS Score"]
+                        }
+                        record["ATH_Return"] = ((record["LTP"] - record["ATH_Event_Price"]) / record["ATH_Event_Price"]) * 100
+                        ath_results.append(record)
+
+            # --- 2. VOL POP CHECK ---
+            pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2 * range_df['Vol_MA50'])
+            pop_days = range_df[pop_mask]
+            
+            if not pop_days.empty:
+                for event_date in pop_days.index:
+                    event_metrics = calculate_metrics_on_date(df, bench_data, event_date)
+                    if event_metrics:
+                        record = {
+                            "Ticker": ticker.replace(".NS", ""),
+                            "Pop Date": event_date.date(),
+                            "Pop_Event_Price": event_metrics["Event Price"],
+                            "LTP": df.iloc[-1]['Close'],
+                            "Pop_Vol_Expansion": event_metrics["Event Vol Expansion"],
+                            "Pop_Failure_Risk": event_metrics["Event Failure Risk"],
+                            "Pop_Persistence": event_metrics["Event Persistence"],
+                            "RS Rating": event_metrics["Event RS Score"]
+                        }
+                        record["Pop_Return"] = ((record["LTP"] - record["Pop_Event_Price"]) / record["Pop_Event_Price"]) * 100
+                        pop_results.append(record)
+
+            # --- 3. STAGE 2 CHECK ---
+            s2_dist = (range_df['Close'] - range_df['SMA200']) / range_df['SMA200']
+            # FIX 2: WIDENED EXTENSION LOGIC HERE TOO (0.02 to 0.20)
+            s2_ext = (s2_dist > 0.02) & (s2_dist < 0.20) 
+
+            s2_trend = (
+                (range_df['Close'] > range_df['SMA200']) & 
+                (range_df['SMA50'] > range_df['SMA200']) & 
+                (range_df['SMA200_Rising']) 
+            )
+            s2_breakout = (range_df['Close'] > range_df['High_50']) | (range_df['Close'] > range_df['High_20'])
+            s2_vol = range_df['Volume'] > 1.2 * range_df['Vol_MA50']
+            
+            s2_days = range_df[s2_trend & s2_breakout & s2_vol & s2_ext]
+
+            if not s2_days.empty:
+                for event_date in s2_days.index:
+                    event_metrics = calculate_metrics_on_date(df, bench_data, event_date)
+                    if event_metrics:
+                        record = {
+                            "Ticker": ticker.replace(".NS", ""),
+                            "Stage2 Date": event_date.date(),
+                            "S2_Event_Price": event_metrics["Event Price"],
+                            "LTP": df.iloc[-1]['Close'],
+                            "S2_Vol_Expansion": event_metrics["Event Vol Expansion"],
+                            "S2_Failure_Risk": event_metrics["Event Failure Risk"],
+                            "S2_Persistence": event_metrics["Event Persistence"],
+                            "Event RS Mom": event_metrics["Event RS Mom"],
+                            "RS Rating": event_metrics["Event RS Score"]
+                        }
+                        record["S2_Return"] = ((record["LTP"] - record["S2_Event_Price"]) / record["S2_Event_Price"]) * 100
+                        stage2_results.append(record)
+
+            # --- 4. ROCKETS ---
+            df_end = df.loc[:end_date]
+            bench_aligned = bench_data.reindex(df_end.index).ffill()
+            curr_metrics = calculate_advanced_metrics(df_end, bench_aligned)
+            if curr_metrics:
+                curr_metrics["Ticker"] = ticker.replace(".NS", "")
+                rocket_results.append(curr_metrics)
+
+        except Exception: 
+            continue
+
+    if not any([ath_results, pop_results, stage2_results, rocket_results]):
+        return [], [], [], breadth_data, []
+    
+    # --- POST-PROCESSING ---
+    df_rocket = pd.DataFrame(rocket_results)
+    if not df_rocket.empty:
+        df_rocket['RS Percentile'] = df_rocket['RS Raw'].rank(pct=True) * 100
+        df_rocket['RS %'] = ((df_rocket['RS Percentile'] * 0.7) + (df_rocket['RS Mom Score'] * 0.3)).fillna(0).astype(int)
+        df_rocket['Rocket Score'] = (
+            0.30 * df_rocket['Trend Score'] + 0.25 * df_rocket['RS %'] +
+            0.20 * df_rocket['Tightness %'] + 0.15 * df_rocket['Vol Dry Score'] +
+            0.10 * df_rocket['Near Breakout']
+        ).round(2)
+        rocket_list = df_rocket[df_rocket['Rocket Score'] >= 50].to_dict('records')
+    else: rocket_list = []
+
+    stage2_list = []
+    if stage2_results:
+        df_s2 = pd.DataFrame(stage2_results)
+        # FIX 4: RS RATING FILTER >= 60 (Instead of RS Mom > 1.05)
+        df_s2_final = df_s2[df_s2['RS Rating'] >= 60]
+        stage2_list = df_s2_final.to_dict('records')
+
+    return ath_results, rocket_list, pop_results, breadth_data, stage2_list
+
+# --- 8. UTILS: STYLING ---
 def apply_text_styling(val, mode='standard'):
     if not isinstance(val, (int, float)): return ''
     
@@ -383,20 +625,43 @@ def apply_text_styling(val, mode='standard'):
         else: return red
     return ''
 
-# --- 7. MAIN UI ---
+# --- 9. MAIN UI ---
 with st.sidebar:
     st.title("⚙️ Configuration")
     file_path = "NiftyTM.txt" 
     tickers = []
+    
+    # FALLBACK: Nifty 50 List if File Not Found
+    NIFTY50_TICKERS = [
+        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC", "SBIN",
+        "LICI", "HINDUNILVR", "LT", "BAJFINANCE", "HCLTECH", "MARUTI", "SUNPHARMA",
+        "ADANIENT", "KOTAKBANK", "TITAN", "ONGC", "TATAMOTORS", "NTPC", "AXISBANK",
+        "ADANIPORTS", "ULTRACEMCO", "POWERGRID", "BAJAJFINSV", "M&M", "WIPRO",
+        "COALINDIA", "TATASTEEL", "ASIANPAINT", "JSWSTEEL", "HDFCLIFE", "SBILIFE",
+        "LTIM", "GRASIM", "TECHM", "BRITANNIA", "INDUSINDBK", "HINDALCO", "DIVISLAB",
+        "EICHERMOT", "APOLLOHOSP", "TATACONSUM", "NESTLEIND", "DRREDDY", "BAJAJ-AUTO",
+        "CIPLA", "HEROMOTOCO", "BPCL"
+    ]
+
     if os.path.exists(file_path):
         with open(file_path, "r") as f: tickers = [line.strip() for line in f.readlines() if line.strip()]
+    else:
+        tickers = NIFTY50_TICKERS # Use fallback
+    
     if not tickers:
-        st.sidebar.warning(f"'{file_path}' not found.")
+        st.sidebar.warning(f"'{file_path}' not found and fallback failed.")
         uploaded = st.sidebar.file_uploader("Upload Ticker List", type=["txt"])
         if uploaded: tickers = [line.strip() for line in uploaded.read().decode("utf-8").splitlines() if line.strip()]
 
     st.divider()
-    preset = st.radio("Analysis Date:", ["Today", "Yesterday", "This Week", "Last Week", "This Month", "This Year", "Custom"])
+    
+    # CHANGED DEFAULT: Index 2 is "This Week" (Safe for weekends)
+    preset = st.radio(
+        "Analysis Date:", 
+        ["Today", "Yesterday", "This Week", "Last Week", "This Month", "This Year", "Custom"],
+        index=2 # CHANGED FROM 4 TO 2
+    )
+    
     today = date.today()
     if preset == "Today": s_d, e_d = today, today
     elif preset == "Yesterday": s_d, e_d = today-timedelta(1), today-timedelta(1)
@@ -416,40 +681,202 @@ st.markdown('<div class="main-title">NSE Vanguard</div>', unsafe_allow_html=True
 st.markdown('<div class="sub-title">Advanced Institutional Scanner</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
 
-if run_btn and tickers:
-    bar = st.progress(0)
-    status = st.empty()
-    ath, rockets, breakouts, breadth = scan_stocks(tickers, s_d, e_d, bar, status)
-    bar.empty()
-    status.empty()
+if 'results' not in st.session_state:
+    st.session_state.results = None
+
+# --- AUTO-RUN + MANUAL RUN LOGIC ---
+if tickers:
+    # Trigger if (Run Button Clicked) OR (First Load AND Results Empty)
+    should_run = run_btn or (st.session_state.results is None)
     
-    tab1, tab2, tab3, tab4 = st.tabs(["⚡ ATH Breakouts", "🚀 Rockets", "💥 Volume Poppers", "📊 Market Breadth"])
+    if should_run:
+        msg = "Downloading data... this might take 50-55 seconds..."
+        with st.spinner(msg):
+            start_t = time.time()
+            bar = st.progress(0)
+            status = st.empty()
+            st.session_state.results = scan_stocks(tickers, s_d, e_d, bar, status)
+            bar.empty()
+            status.empty()
+            end_t = time.time()
+            # REMOVED SUCCESS BANNER AS REQUESTED IN PREVIOUS PROMPT, 
+            # BUT USER JUST ASKED TO 'GIVE OPTION TO RUN'. 
+            # IF YOU WANT THE BANNER BACK, UNCOMMENT BELOW:
+            # st.success(f"Data loaded in {end_t - start_t:.1f} seconds.")
+
+# --- TOP BREADTH DASHBOARD (REGIME TILES) ---
+if st.session_state.results:
+    ath, rockets, breakouts, breadth, stage2 = st.session_state.results
+    
+    if breadth:
+        df_breadth = pd.DataFrame(breadth)
+        df_breadth["Net New Lows"] = df_breadth["New Lows"] - df_breadth["New Highs"]
+        last10 = df_breadth.tail(10) # Last 10 days for sparkline
+        
+        # Safe extraction of series
+        pct20_series = last10.get("% Above 20 DMA", pd.Series(dtype=float))
+        pct200_series = last10.get("% Above 200 DMA", pd.Series(dtype=float))
+        adslope_series = last10.get("AD Slope 20D", pd.Series(dtype=float))
+        bo_series = last10.get("Rolling BO Success 10D", pd.Series(dtype=float))
+        
+        break20_series = last10.get("% Breaking < 20 DMA", pd.Series(dtype=float))
+        
+        # CHANGED: DIRECT "NEW HIGHS" AND "NEW LOWS" (NO NET)
+        new_highs_series = last10.get("New Highs", pd.Series(dtype=float))
+        new_lows_series = last10.get("New Lows", pd.Series(dtype=float))
+        net_highs_series = last10.get("Net New Highs", pd.Series(dtype=float)) # Corrected Key
+
+        if not pct200_series.empty:
+            
+            # --- ROW 1 ---
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                render_regime_tile("% Above 20 DMA", pct20_series.iloc[-1], pct20_series, 50, True, "%")
+            with c2:
+                render_regime_tile("% Above 200 DMA", pct200_series.iloc[-1], pct200_series, 50, True, "%")
+            with c3:
+                # Bearish metric -> lower is better (positive=False)
+                render_regime_tile("% Breaking < 20 DMA", break20_series.iloc[-1], break20_series, 4, False, "%")
+
+            # --- ROW 2 ---
+            c4, c5, c6 = st.columns(3)
+            with c4:
+                render_regime_tile("AD Slope 20D", adslope_series.iloc[-1], adslope_series.fillna(0), 0, True, "%")
+            with c5:
+                render_regime_tile("10D BO Success", bo_series.iloc[-1], bo_series.fillna(0), 50, True, "%")
+            with c6:
+                render_regime_tile("Net New Highs", net_highs_series.iloc[-1], net_highs_series.fillna(0), 0, True, "")
+
+    tab_stage2, tab_ath, tab_pop, tab_trend, tab_breadth = st.tabs([
+        "📈 Stage 2 Breakouts", 
+        "⚡ ATH Breakouts", 
+        "💥 Volume Poppers", 
+        "🔭 Trend Watch", 
+        "📊 Market Breadth"
+    ])
 
     def copy_tv(data):
         if not data: return
-        tickers = [f"NSE:{x['Ticker']}" for x in data]
-        batches = [", ".join(tickers[i:i+30]) for i in range(0, len(tickers), 30)]
+        unique_tickers = list(dict.fromkeys([f"NSE:{x['Ticker']}" for x in data]))
+        batches = [", ".join(unique_tickers[i:i+30]) for i in range(0, len(unique_tickers), 30)]
         st.markdown("### 📋 TradingView Watchlist")
         for b in batches: st.code(b, language="text")
 
-    # 1. ATH
-    with tab1:
-        st.markdown(f"<div class='metric-box'>Found {len(ath)} Stocks</div>", unsafe_allow_html=True)
-        if ath:
-            df = pd.DataFrame(ath)
-            cols = ["Ticker", "Breakout Date", "Price", "Return", "Failure Risk", "Persistence"]
-            styled = df[cols].style.format({"Price": "₹ {:.2f}", "Return": "{:.2f}%"})\
-                .applymap(lambda v: apply_text_styling(v, 'return'), subset=["Return"])\
-                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Failure Risk"])\
-                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Persistence"])
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-            copy_tv(ath)
-        else: st.info("No ATH Breakouts.")
+    # 1. STAGE 2 BREAKOUTS
+    with tab_stage2:
+        df_s2 = pd.DataFrame(stage2)
+        if df_s2.empty or "Ticker" not in df_s2.columns:
+            st.markdown("<div class='metric-box'>0 Events Found</div>", unsafe_allow_html=True)
+            st.info("No Stage 2 breakouts found.")
+        else:
+            unique_count = df_s2["Ticker"].nunique()
+            total_events = len(df_s2)
+            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks | {total_events} Total Events</div>", unsafe_allow_html=True)
+            
+            df_display = df_s2.copy()
+            ticker_list = ["All"] + sorted(df_display["Ticker"].unique().tolist())
+            selected = st.selectbox("Filter by Stock", ticker_list, key="stage2_filter")
 
-    # 2. ROCKETS
-    with tab2:
-        st.markdown(f"<div class='metric-box'>Found {len(rockets)} Rocket Setups</div>", unsafe_allow_html=True)
-        st.caption("Criteria: Trend (30%) + RS (25%) + Tightness (20%) + Volume (15%) + Near Breakout (10%)")
+            if selected != "All":
+                df_display = df_display[df_display["Ticker"] == selected]
+
+            if "Stage2 Date" in df_display.columns:
+                df_display = df_display.sort_values("Stage2 Date", ascending=False)
+
+            st.caption(f"Showing {len(df_display)} Events")
+
+            if df_display.empty:
+                st.warning("No events for selected stock in this period.")
+            else:
+                cols = ["Ticker", "Stage2 Date", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
+                cols = [c for c in cols if c in df_display.columns]
+                styled = df_display[cols].style.format({
+                    "S2_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "S2_Return": "{:.2f}%"
+                })\
+                .applymap(lambda v: apply_text_styling(v, 'return'), subset=["S2_Return"])\
+                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["S2_Persistence", "RS Rating"])\
+                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["S2_Failure_Risk"])
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+                copy_tv(stage2)
+
+    # 2. ATH BREAKOUTS
+    with tab_ath:
+        df_ath = pd.DataFrame(ath)
+        if df_ath.empty or "Ticker" not in df_ath.columns:
+            st.markdown("<div class='metric-box'>0 Events Found</div>", unsafe_allow_html=True)
+            st.info("No ATH breakouts found.")
+        else:
+            unique_count = df_ath["Ticker"].nunique()
+            total_events = len(df_ath)
+            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks | {total_events} Total Events</div>", unsafe_allow_html=True)
+
+            df_display = df_ath.copy()
+            ticker_list = ["All"] + sorted(df_display["Ticker"].unique().tolist())
+            selected = st.selectbox("Filter by Stock", ticker_list, key="ath_filter")
+
+            if selected != "All":
+                df_display = df_display[df_display["Ticker"] == selected]
+
+            if "ATH Date" in df_display.columns:
+                df_display = df_display.sort_values("ATH Date", ascending=False)
+
+            st.caption(f"Showing {len(df_display)} Events")
+
+            if df_display.empty:
+                st.warning("No events for selected stock in this period.")
+            else:
+                cols = ["Ticker", "ATH Date", "ATH_Event_Price", "LTP", "ATH_Return", "RS Rating", "ATH_Persistence", "ATH_Failure_Risk"]
+                cols = [c for c in cols if c in df_display.columns]
+                styled = df_display[cols].style.format({
+                    "ATH_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "ATH_Return": "{:.2f}%"
+                })\
+                .applymap(lambda v: apply_text_styling(v, 'return'), subset=["ATH_Return"])\
+                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["ATH_Failure_Risk"])\
+                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["ATH_Persistence", "RS Rating"])
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+                copy_tv(ath)
+
+    # 3. VOLUME POPPERS
+    with tab_pop:
+        df_pop = pd.DataFrame(breakouts)
+        if df_pop.empty or "Ticker" not in df_pop.columns:
+            st.markdown("<div class='metric-box'>0 Events Found</div>", unsafe_allow_html=True)
+            st.info("No Volume Poppers found.")
+        else:
+            unique_count = df_pop["Ticker"].nunique()
+            total_events = len(df_pop)
+            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks | {total_events} Total Events</div>", unsafe_allow_html=True)
+            
+            df_display = df_pop.copy()
+            ticker_list = ["All"] + sorted(df_display["Ticker"].unique().tolist())
+            selected = st.selectbox("Filter by Stock", ticker_list, key="pop_filter")
+
+            if selected != "All":
+                df_display = df_display[df_display["Ticker"] == selected]
+
+            if "Pop Date" in df_display.columns:
+                df_display = df_display.sort_values("Pop Date", ascending=False)
+
+            st.caption(f"Showing {len(df_display)} Events")
+
+            if df_display.empty:
+                st.warning("No events for selected stock in this period.")
+            else:
+                cols = ["Ticker", "Pop Date", "Pop_Event_Price", "LTP", "Pop_Return", "RS Rating", "Pop_Vol_Expansion", "Pop_Failure_Risk", "Pop_Persistence"]
+                cols = [c for c in cols if c in df_display.columns]
+                styled = df_display[cols].style.format({
+                    "Pop_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "Pop_Return": "{:.2f}%", "Pop_Vol_Expansion": "{:.2f}x"
+                })\
+                .applymap(lambda v: apply_text_styling(v, 'return'), subset=["Pop_Return"])\
+                .applymap(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Pop_Vol_Expansion"])\
+                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Pop_Failure_Risk"])\
+                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Pop_Persistence", "RS Rating"])
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+                copy_tv(breakouts)
+
+    # 4. TREND WATCH
+    with tab_trend:
+        st.markdown(f"<div class='metric-box'>Found {len(rockets)} Trend Watch Setups</div>", unsafe_allow_html=True)
         if rockets:
             df = pd.DataFrame(rockets).sort_values(by="Rocket Score", ascending=False)
             cols = ["Ticker", "Price", "Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Failure Risk", "Persistence"]
@@ -458,29 +885,12 @@ if run_btn and tickers:
                 .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Failure Risk"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
             copy_tv(rockets)
-        else: st.info("No Rocket Setups found.")
+        else: st.info("No Trend Watch Setups found.")
 
-    # 3. VOLUME POPPERS
-    with tab3:
-        st.markdown(f"<div class='metric-box'>Found {len(breakouts)} Volume Poppers</div>", unsafe_allow_html=True)
-        st.caption("Criteria: Price > 20-Day High AND Volume Expansion > 1.2x")
-        if breakouts:
-            df = pd.DataFrame(breakouts)
-            cols = ["Ticker", "Price", "Vol Expansion", "Failure Risk", "Persistence"]
-            styled = df[cols].style.format({"Price": "₹ {:.2f}", "Vol Expansion": "{:.2f}x"})\
-                .applymap(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Vol Expansion"])\
-                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Failure Risk"])\
-                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Persistence"])
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-            copy_tv(breakouts)
-        else: st.info("No Volume Poppers found.")
-
-    # 4. MARKET BREADTH
-    with tab4:
+    # 5. MARKET BREADTH
+    with tab_breadth:
         st.markdown("### 📊 Market Regime & Internals")
-        
-        # COMPLETE CHEATSHEET
-        with st.expander("ℹ️ Breadth Cheatsheet (Click to Expand)", expanded=True):
+        with st.expander("ℹ️ Breadth Cheatsheet (Click to Expand)", expanded=False):
             st.markdown("""
             | Metric | Interpretation |
             | :--- | :--- |
@@ -488,44 +898,31 @@ if run_btn and tickers:
             | **Net New Highs** | **Leadership Strength.** Positive = Bullish, Negative = Bearish. |
             | **AD Slope 20D** | **Trend Acceleration.** Positive % means advances are expanding daily. |
             | **AD Change 20D** | **Magnitude.** Raw change in the Cumulative AD Line over 20 days. |
-            | **Breakout Density %** | **Thrust.** % of universe breaking out today. High density (>1-2%) = Coordinated move. |
-            | **Breakout Success 5D** | **Setup Quality.** > 60% = Breakouts working well. < 40% = High failure rate. |
-            | **% > 20 DMA** | **Short-term Participation.** > 70% Overbought, < 30% Oversold. |
-            | **% > 200 DMA** | **Structural Regime.** > 50% Bull Market, < 50% Bear Market. |
-            | **% Breaking < 20DMA** | **Distribution.** High values indicate institutional selling. |
-            | **% Positive 20D** | **Broad Momentum.** % of stocks up over the last month. |
-            | **% > 5% in 20D** | **Thrust Strength.** % of stocks with significant gains recently. |
+            | **Rolling BO Success 10D** | **Setup Quality.** > 60% = Breakouts working well. < 40% = High failure rate. |
+            | **% Above 20 DMA** | **Short-term Participation.** > 70% Overbought, < 30% Oversold. |
+            | **% Above 200 DMA** | **Structural Regime.** > 50% Bull Market, < 50% Bear Market. |
+            | **% Breaking < 20 DMA** | **Distribution.** High values indicate institutional selling. |
+
             """, unsafe_allow_html=True)
 
         if breadth:
             df = pd.DataFrame(breadth)
-            
-            cols = [
-                "Date", "New Highs", "New Lows", "Net New Highs", "AD Slope 20D", "AD Change 20D", 
-                "Breakout Density %", "Breakout Success 5D", "% > 20 DMA", "% > 200 DMA"
-            ]
-            
+            # UPDATED COLUMNS LIST
+            cols = ["Date", "New Highs", "New Lows", "Net New Highs", "AD Slope 20D", "AD Change 20D", "Rolling BO Success 10D", "% Above 20 DMA", "% Breaking < 20 DMA", "% Above 200 DMA"]
             def color_breadth(val):
                 if isinstance(val, (int, float)):
                     if val > 70: return 'color: #008000; font-weight: bold;'
                     elif val > 40: return 'color: #DAA520; font-weight: bold;'
                     else: return 'color: #FF0000; font-weight: bold;'
                 return ''
-            
-            def color_slope(val):
-                return 'color: #008000; font-weight: bold;' if val > 0 else 'color: #FF0000; font-weight: bold;'
+            def color_slope(val): return 'color: #008000; font-weight: bold;' if val > 0 else 'color: #FF0000; font-weight: bold;'
 
             styled = df[cols].style.format({
-                "AD Slope 20D": "{:.2f}%", 
-                "AD Change 20D": "{:.2f}",
-                "Breakout Success 5D": "{:.1f}%",
-                "Breakout Density %": "{:.2f}%",
-                "% > 20 DMA": "{:.2f}%",
-                "% > 200 DMA": "{:.2f}%"
+                "AD Slope 20D": "{:.2f}%", "AD Change 20D": "{:.2f}", "Rolling BO Success 10D": "{:.1f}%",
+                "% Above 20 DMA": "{:.2f}%", "% Above 200 DMA": "{:.2f}%", "% Breaking < 20 DMA": "{:.2f}%"
             })\
-            .applymap(color_breadth, subset=["% > 20 DMA", "% > 200 DMA"])\
-            .applymap(lambda v: apply_text_styling(v, 'bo_success'), subset=["Breakout Success 5D"])\
+            .applymap(color_breadth, subset=["% Above 20 DMA", "% Above 200 DMA"])\
+            .applymap(lambda v: apply_text_styling(v, 'bo_success'), subset=["Rolling BO Success 10D"])\
             .applymap(color_slope, subset=["AD Slope 20D", "Net New Highs", "AD Change 20D"])
-
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else: st.info("No Breadth Data.")
