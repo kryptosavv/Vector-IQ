@@ -10,8 +10,8 @@ from plotly.subplots import make_subplots
 
 # --- 1. CONFIGURATION & BRANDING ---
 st.set_page_config(
-    page_title="NSE Vanguard",
-    page_icon="🛡️",
+    page_title="Vector IQ",
+    page_icon="📐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -675,10 +675,10 @@ with st.sidebar:
         with c2: e_d = st.date_input("End", value=today)
     
     st.divider()
-    run_btn = st.button("🚀 Run Vanguard Scan", type="primary", use_container_width=True)
+    run_btn = st.button("🧮 Run Vector Engine", type="primary", use_container_width=True)
 
-st.markdown('<div class="main-title">NSE Vanguard</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Advanced Institutional Scanner</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
 
 if 'results' not in st.session_state:
@@ -690,7 +690,7 @@ if tickers:
     should_run = run_btn or (st.session_state.results is None)
     
     if should_run:
-        msg = "Downloading data... this might take 50-55 seconds..."
+        msg = "Downloading data... this might take 30 seconds..."
         with st.spinner(msg):
             start_t = time.time()
             bar = st.progress(0)
@@ -699,10 +699,6 @@ if tickers:
             bar.empty()
             status.empty()
             end_t = time.time()
-            # REMOVED SUCCESS BANNER AS REQUESTED IN PREVIOUS PROMPT, 
-            # BUT USER JUST ASKED TO 'GIVE OPTION TO RUN'. 
-            # IF YOU WANT THE BANNER BACK, UNCOMMENT BELOW:
-            # st.success(f"Data loaded in {end_t - start_t:.1f} seconds.")
 
 # --- TOP BREADTH DASHBOARD (REGIME TILES) ---
 if st.session_state.results:
