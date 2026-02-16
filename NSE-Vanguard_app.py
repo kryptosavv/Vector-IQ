@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import timedelta, date
+from datetime import datetime, timedelta, timezone, date
 import os
 import time
 import plotly.graph_objects as go
@@ -729,11 +729,11 @@ with st.sidebar:
 
     st.divider()
     
-    # ✅ ADDED "Last Week till Date" PRESET
+    # ✅ DEFAULT CHANGED TO INDEX 4 (Last Week till Date)
     preset = st.radio(
         "Analysis Date:", 
         ["Today", "Yesterday", "This Week", "Last Week", "Last Week till Date", "This Month", "This Year", "Custom"],
-        index=2 
+        index=4
     )
     
     today = date.today()
@@ -752,8 +752,25 @@ with st.sidebar:
     st.divider()
     run_btn = st.button("🧮 Run Vector Engine", type="primary", use_container_width=True)
 
-st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
+# ✅ TIME CALCULATION & HEADER LAYOUT
+utc_now = datetime.now(timezone.utc)
+ist_offset = timedelta(hours=5, minutes=30)
+ist_time = utc_now + ist_offset
+last_refreshed = ist_time.strftime("%Y-%m-%d | %H:%M:%S")
+
+col_header, col_refresh = st.columns([3, 1])
+
+with col_header:
+    st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
+
+with col_refresh:
+    st.markdown(f"""
+    <div style="text-align: right; color: gray; font-size: 0.9em; padding-top: 20px;">
+        Last Refreshed:<br><b>{last_refreshed}</b>
+    </div>
+    """, unsafe_allow_html=True)
+
 st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
 
 if 'results' not in st.session_state:
