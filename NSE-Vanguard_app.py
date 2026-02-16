@@ -174,6 +174,7 @@ def calculate_advanced_metrics(df, bench_series):
     trend_score = ma_dist_score + alignment_score + slope_score
 
     # --- RS ---
+    bench_series = bench_series.ffill()
     rs_line = close / bench_series
     rs_curr = rs_line.iloc[-1]
     rs_prev_20 = rs_line.iloc[-20]
@@ -225,7 +226,7 @@ def calculate_advanced_metrics(df, bench_series):
     basic_vcp = False
     
     # 1. Tightness Calculation
-    if rolling_high_10 and rolling_high_10 > 0:
+    if rolling_high_10 is not None and rolling_high_10 > 0:
         vcp_range_pct = ((rolling_high_10 - rolling_low_10) / rolling_high_10) * 100
         is_tight = vcp_range_pct < max_rng_pct
     else:
@@ -233,7 +234,7 @@ def calculate_advanced_metrics(df, bench_series):
 
     # 2. Volume Dry Check (UPDATED: Uses 5D avg < 50D avg)
     vol_dry_check = False
-    if v_50d and v_50d > 0:
+    if v_50d is not None and v_50d > 0:
         vol_dry_check = v_5d < v_50d
     
     # 3. Trend Check (UPDATED: Price > 150SMA AND SMA50 > SMA200)
@@ -618,7 +619,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             if not s2_days.empty:
                 for event_date in s2_days.index:
                     event_metrics = calculate_metrics_on_date(df, bench_data, event_date)
-                    if event_metrics:
+                    if (event_metrics["Event RS Score"] >= 60) and (event_metrics["Event Persistence"] >= 50):
                         record = {
                             "Ticker": ticker.replace(".NS", ""),
                             "Stage2 Date": event_date.date(),
@@ -667,8 +668,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     stage2_list = []
     if stage2_results:
         df_s2 = pd.DataFrame(stage2_results)
-        df_s2_final = df_s2[df_s2['RS Rating'] >= 60]
-        stage2_list = df_s2_final.to_dict('records')
+        stage2_list = df_s2.to_dict('records')
 
     return ath_results, full_scan_list, pop_results, breadth_data, stage2_list
 
@@ -844,8 +844,19 @@ if st.session_state.results:
         if df_s2.empty:
             st.info("No Stage 2 breakouts found.")
         else:
+            # --- FILTER ---
+            all_tickers = sorted(df_s2["Ticker"].unique())
+            selected_tickers = st.multiselect("Filter by Ticker", all_tickers, key="s2_filter")
+            
+            if selected_tickers:
+                df_s2 = df_s2[df_s2["Ticker"].isin(selected_tickers)]
+
+            # --- METRICS ---
+            entries_count = len(df_s2)
             unique_count = df_s2["Ticker"].nunique()
-            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+            
+            # --- TABLE ---
             cols = ["Ticker", "Stage2 Date", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
             styled = df_s2[cols].style.format({
                 "S2_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "S2_Return": "{:.2f}%"
@@ -854,7 +865,7 @@ if st.session_state.results:
             .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["S2_Persistence", "RS Rating"])\
             .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["S2_Failure_Risk"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
-            copy_tv(stage2)
+            copy_tv(df_s2.to_dict('records'))
 
     # 2. ATH BREAKOUTS
     with tab_ath:
@@ -862,8 +873,19 @@ if st.session_state.results:
         if df_ath.empty:
             st.info("No ATH breakouts found.")
         else:
+            # --- FILTER ---
+            all_tickers = sorted(df_ath["Ticker"].unique())
+            selected_tickers = st.multiselect("Filter by Ticker", all_tickers, key="ath_filter")
+            
+            if selected_tickers:
+                df_ath = df_ath[df_ath["Ticker"].isin(selected_tickers)]
+
+            # --- METRICS ---
+            entries_count = len(df_ath)
             unique_count = df_ath["Ticker"].nunique()
-            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+
+            # --- TABLE ---
             cols = ["Ticker", "ATH Date", "ATH_Event_Price", "LTP", "ATH_Return", "RS Rating", "ATH_Persistence", "ATH_Failure_Risk"]
             styled = df_ath[cols].style.format({
                 "ATH_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "ATH_Return": "{:.2f}%"
@@ -872,7 +894,7 @@ if st.session_state.results:
             .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["ATH_Failure_Risk"])\
             .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["ATH_Persistence", "RS Rating"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
-            copy_tv(ath)
+            copy_tv(df_ath.to_dict('records'))
 
     # 3. VOLUME POPPERS
     with tab_pop:
@@ -880,8 +902,19 @@ if st.session_state.results:
         if df_pop.empty:
             st.info("No Volume Poppers found.")
         else:
+            # --- FILTER ---
+            all_tickers = sorted(df_pop["Ticker"].unique())
+            selected_tickers = st.multiselect("Filter by Ticker", all_tickers, key="pop_filter")
+            
+            if selected_tickers:
+                df_pop = df_pop[df_pop["Ticker"].isin(selected_tickers)]
+
+            # --- METRICS ---
+            entries_count = len(df_pop)
             unique_count = df_pop["Ticker"].nunique()
-            st.markdown(f"<div class='metric-box'>{unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+
+            # --- TABLE ---
             cols = ["Ticker", "Pop Date", "Pop_Event_Price", "LTP", "Pop_Return", "RS Rating", "Pop_Vol_Expansion", "Pop_Failure_Risk", "Pop_Persistence"]
             styled = df_pop[cols].style.format({
                 "Pop_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "Pop_Return": "{:.2f}%", "Pop_Vol_Expansion": "{:.2f}x"
@@ -891,7 +924,7 @@ if st.session_state.results:
             .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Pop_Failure_Risk"])\
             .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Pop_Persistence", "RS Rating"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
-            copy_tv(breakouts)
+            copy_tv(df_pop.to_dict('records'))
 
     # 4. TREND WATCH (ROCKETS)
     with tab_trend:
