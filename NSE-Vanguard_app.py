@@ -211,10 +211,10 @@ def calculate_advanced_metrics(df, bench_series):
     readiness_score = min(max((1 - ((h52 - c) / h52 / 0.10)) * 100, 0), 100) if h52 > 0 else 0
 
     # ==========================================
-    # ✅ BASE BUILDER LOGIC (VCP Integration)
+    # ✅ BASE BUILDER LOGIC (UPDATED VCP Integration)
     # ==========================================
     
-    # 🔹 A) Basic VCP (Tightness + Volume Dry Up)
+    # 🔹 A) Basic VCP (Trend + Tightness + Vol Dry Up)
     tight_len = 10
     max_rng_pct = 12
     
@@ -224,20 +224,24 @@ def calculate_advanced_metrics(df, bench_series):
     vcp_range_pct = None
     basic_vcp = False
     
+    # 1. Tightness Calculation
     if rolling_high_10 and rolling_high_10 > 0:
         vcp_range_pct = ((rolling_high_10 - rolling_low_10) / rolling_high_10) * 100
         is_tight = vcp_range_pct < max_rng_pct
     else:
         is_tight = False
 
-    curr_vol = volume.iloc[-1]
+    # 2. Volume Dry Check (UPDATED: Uses 5D avg < 50D avg)
     vol_dry_check = False
     if v_50d and v_50d > 0:
-        vol_dry_check = curr_vol < v_50d
+        vol_dry_check = v_5d < v_50d
+    
+    # 3. Trend Check (UPDATED: Price > 150SMA AND SMA50 > SMA200)
+    trend_ok = (c > s150) and (s50 > s200)
         
-    basic_vcp = is_tight and vol_dry_check
+    basic_vcp = is_tight and vol_dry_check and trend_ok
 
-    # 🔹 B) Elite VCP (Multi-stage contraction)
+    # 🔹 B) Elite VCP (UPDATED: Progressive Contraction d1>d2>d3)
     base_len = 45
     num_contract = 3
     segment = max(1, base_len // num_contract) # 15 days per segment
@@ -262,11 +266,12 @@ def calculate_advanced_metrics(df, bench_series):
             d2 = depth(h2, l2)
             d3 = depth(h3, l3)
             
+            # Updated: Progressive Contraction Logic
             elite_vcp = (
                 basic_vcp and
-                (d3 < d1) and
-                (d3 < d2) and
-                (d1 > 5)
+                (d1 > d2) and       # First contraction wider than second
+                (d2 > d3) and       # Second contraction wider than third
+                (d3 < 12)           # Final contraction is tight
             )
         except:
             elite_vcp = False
@@ -905,17 +910,21 @@ if st.session_state.results:
             copy_tv(df.to_dict('records'))
         else: st.info("No Trend Watch Setups found.")
 
-    # 5. ✅ BASE BUILDER (Updated with Secondary Filter & Column Cleanup)
+    # 5. ✅ BASE BUILDER (Updated Filters: RS >= 60)
     with tab_base:
         if full_scan:
             df = pd.DataFrame(full_scan)
-            # 1. Filter: Show stocks with Basic VCP (Tight + Vol Dry)
-            df_base = df[df["Basic VCP"] == True].copy()
             
-            # 2. Filter: Keep only those that meet "Elite VCP" OR "Within 25% 52W High"
+            # 1. NEW FILTER: Filter by RS % >= 60
+            df_base = df[df['RS %'] >= 60].copy()
+
+            # 2. Filter: Show stocks with Basic VCP (Tight + Vol Dry + Trend)
+            df_base = df_base[df_base["Basic VCP"] == True]
+            
+            # 3. Filter: Keep only those that meet "Elite VCP" OR "Within 25% 52W High"
             df_base = df_base[ (df_base["Within 25% 52W High"] == True) | (df_base["Elite VCP"] == True) ]
             
-            st.markdown(f"<div class='metric-box'>Found {len(df_base)} Base Structures</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>", unsafe_allow_html=True)
             
             if not df_base.empty:
                 # SORT PRIORITY: Elite VCP -> Lowest Dist to Breakout -> Highest RS
@@ -924,7 +933,6 @@ if st.session_state.results:
                     ascending=[False, True, False]
                 )
 
-                # ✅ Removed "Basic VCP" column from display
                 cols = ["Ticker", "Price", "Within 25% 52W High", "Elite VCP", "VCP Range %", "Dist to Breakout %", "RS %", "Vol Expansion"]
                 
                 styled = df_base[cols].style.format({
@@ -940,7 +948,7 @@ if st.session_state.results:
                 st.dataframe(styled, use_container_width=True, hide_index=True)
                 copy_tv(df_base.to_dict('records'))
             else:
-                st.warning("No stocks found matching the criteria (Basic VCP + [Elite VCP OR Near 52WH]).")
+                st.warning("No stocks found matching the criteria (RS>=60, Basic VCP + [Elite VCP OR Near 52WH]).")
         else: st.info("No data available.")
 
     # 6. MARKET BREADTH
