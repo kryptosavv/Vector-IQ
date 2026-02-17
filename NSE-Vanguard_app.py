@@ -63,7 +63,7 @@ def download_data(tickers):
             download_list,
             period="5y",
             group_by='ticker',
-            threads=True,
+            threads=False,
             progress=False
         )
         return data
@@ -1083,3 +1083,4 @@ if st.session_state.results:
             .applymap(color_slope, subset=["AD Slope 20D", "Net New Highs", "AD Change 20D"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else: st.info("No Breadth Data.")
+
