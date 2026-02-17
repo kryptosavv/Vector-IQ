@@ -281,14 +281,33 @@ def calculate_advanced_metrics(df, bench_series):
     base_high = high.iloc[-base_len:].max()
     dist_to_breakout = ((base_high - c) / base_high) * 100 if base_high > 0 else 100
 
+    # 🔹 D) Base Duration (Soft-Capped at 2x Base Length)
+
+    base_low = low.iloc[-base_len:].min()
+    base_high = high.iloc[-base_len:].max()
+
+    max_duration = base_len * 2  # Soft upper bound (e.g., 90 if base_len=45)
+
+    base_duration = 0
+    for price in close.iloc[::-1]:
+        if base_low <= price <= base_high:
+            base_duration += 1
+            if base_duration >= max_duration:
+                break
+        else:
+            break
+
+
     # ==========================================
 
     # --- Failure Risk ---
-    failure_score = 0
-    if vol_expansion < 1.2: failure_score += 30
-    h_day, l_day = high.iloc[-1], low.iloc[-1]
-    if (h_day - l_day) > 0 and ((c - l_day)/(h_day - l_day)) < 0.5: failure_score += 20
     sma20 = close.rolling(20).mean().iloc[-1]
+
+    failure_score = 0
+    if vol_expansion < 1.3: failure_score += 30
+    h_day, l_day = high.iloc[-1], low.iloc[-1]
+    if c < sma20:    failure_score += 20
+    if (h_day - l_day) > 0 and ((c - l_day)/(h_day - l_day)) < 0.5: failure_score += 20
     if sma20 > 0 and ((c - sma20)/sma20) > 0.15: failure_score += 20
     failure_risk = min(failure_score, 100)
 
@@ -311,7 +330,7 @@ def calculate_advanced_metrics(df, bench_series):
     extension = (c - s200) / s200 if s200 > 0 else 0
     
     not_extended = (extension > 0.02) and (extension < 0.20)
-    vol_confirm = vol_expansion >= 1.2
+    vol_confirm = vol_expansion >= 1.3
 
     stage2_candidate = stage2_trend and breakout_trigger and not_extended and vol_confirm
 
@@ -334,7 +353,8 @@ def calculate_advanced_metrics(df, bench_series):
         "Elite VCP": elite_vcp,
         "VCP Range %": round(vcp_range_pct, 2) if vcp_range_pct is not None else 0,
         "Dist to Breakout %": round(dist_to_breakout, 2),
-        "Within 25% 52W High": dist_52w_high_pct <= 25
+        "Within 25% 52W High": dist_52w_high_pct <= 25,
+        "Base Duration": base_duration # 🔥 ADDED TO RETURN
     }
 
 # --- 5. EVENT DATE METRICS ENGINE ---
@@ -544,6 +564,12 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
         try:
             df = raw_data[ticker].copy()
             if df.empty or len(df) < 260: continue
+            
+            # 🔥 CHANGE 2: LIQUIDITY FILTER (Dollar Volume)
+            df['Dollar_Vol'] = df['Close'] * df['Volume']
+            avg_dollar_vol = df['Dollar_Vol'].rolling(50).mean().iloc[-1]
+            if avg_dollar_vol < 1_00_000_000:  # ₹ 10 Cr daily liquidity
+                continue
 
             # --- PRE-CALCULATE INDICATORS (FULL HISTORY) ---
             df['SMA50'] = df['Close'].rolling(50).mean()
@@ -582,7 +608,8 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                         ath_results.append(record)
 
             # --- 2. VOL POP CHECK ---
-            pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2 * range_df['Vol_MA50'])
+            pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2
+             * range_df['Vol_MA50'])
             pop_days = range_df[pop_mask]
             
             if not pop_days.empty:
@@ -612,14 +639,25 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                 (range_df['SMA200_Rising']) 
             )
             s2_breakout = (range_df['Close'] > range_df['High_50']) | (range_df['Close'] > range_df['High_20'])
-            s2_vol = range_df['Volume'] > 1.2 * range_df['Vol_MA50']
+            s2_vol = range_df['Volume'] > 1.3 * range_df['Vol_MA50']
             
             s2_days = range_df[s2_trend & s2_breakout & s2_vol & s2_ext]
 
             if not s2_days.empty:
                 for event_date in s2_days.index:
                     event_metrics = calculate_metrics_on_date(df, bench_data, event_date)
+                    # Keep base filter
                     if (event_metrics["Event RS Score"] >= 60) and (event_metrics["Event Persistence"] >= 50):
+                        
+                        # 🔥 CHANGE 3: SIGNAL QUALITY BAND
+                        quality = "Low"
+                        if event_metrics["Event RS Score"] >= 75 and \
+                           event_metrics["Event Persistence"] >= 65 and \
+                           event_metrics["Event Failure Risk"] < 30:
+                            quality = "High"
+                        elif event_metrics["Event RS Score"] >= 60:
+                            quality = "Medium"
+
                         record = {
                             "Ticker": ticker.replace(".NS", ""),
                             "Stage2 Date": event_date.date(),
@@ -629,7 +667,8 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                             "S2_Failure_Risk": event_metrics["Event Failure Risk"],
                             "S2_Persistence": event_metrics["Event Persistence"],
                             "Event RS Mom": event_metrics["Event RS Mom"],
-                            "RS Rating": event_metrics["Event RS Score"]
+                            "RS Rating": event_metrics["Event RS Score"],
+                            "Signal Quality": quality
                         }
                         record["S2_Return"] = ((record["LTP"] - record["S2_Event_Price"]) / record["S2_Event_Price"]) * 100
                         stage2_results.append(record)
@@ -677,7 +716,13 @@ def apply_text_styling(val, mode='standard'):
     if isinstance(val, bool):
         return 'color: #00FF88; font-weight: bold;' if val else 'color: #333;'
 
-    if not isinstance(val, (int, float)): return ''
+    if not isinstance(val, (int, float)): 
+        # Handle string based styling (like Signal Quality)
+        if mode == 'quality':
+            if val == 'High': return 'color: #00FF88; font-weight: bold;'
+            if val == 'Medium': return 'color: #DAA520; font-weight: bold;'
+            if val == 'Low': return 'color: #FF0000; font-weight: bold;'
+        return ''
     
     green = 'color: #008000; font-weight: bold;' 
     amber = 'color: #DAA520; font-weight: bold;'
@@ -822,6 +867,31 @@ if st.session_state.results:
             with c5: render_regime_tile("10D BO Success", bo_series.iloc[-1], bo_series.fillna(0), 50, True, "%")
             with c6: render_regime_tile("Net New Highs", net_highs_series.iloc[-1], net_highs_series.fillna(0), 0, True, "")
 
+        # 🔥 CHANGE 1: REGIME CLASSIFICATION
+        if not df_breadth.empty:
+            latest = df_breadth.iloc[-1]
+
+            cond_expansion = (
+                latest["% Above 20 DMA"] > 60 and
+                latest["AD Slope 20D"] > 0 and
+                latest["Rolling BO Success 10D"] > 50
+            )
+
+            cond_chop = (
+                latest["% Above 20 DMA"] < 45 and
+                latest["AD Slope 20D"] < 0 and
+                latest["Rolling BO Success 10D"] < 40
+            )
+
+            if cond_expansion:
+                regime_label = "🟢 EXPANSION REGIME"
+            elif cond_chop:
+                regime_label = "🔴 CHOP / RISK-OFF"
+            else:
+                regime_label = "🟡 TRANSITIONAL"
+
+            st.markdown(f"<div class='metric-box'>{regime_label}</div>", unsafe_allow_html=True)
+
     tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_breadth = st.tabs([
         "📈 Stage 2 Breakouts", 
         "⚡ ATH Breakouts", 
@@ -844,6 +914,10 @@ if st.session_state.results:
         if df_s2.empty:
             st.info("No Stage 2 breakouts found.")
         else:
+            # 🔥 CHANGE 4: CLUSTER WARNING
+            if len(df_s2) >= 10:
+                st.warning("⚠️ Signal Clustering Detected — Check Market Regime")
+
             # --- FILTER ---
             all_tickers = sorted(df_s2["Ticker"].unique())
             selected_tickers = st.multiselect("Filter by Ticker", all_tickers, key="s2_filter")
@@ -857,11 +931,12 @@ if st.session_state.results:
             st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
             
             # --- TABLE ---
-            cols = ["Ticker", "Stage2 Date", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
+            cols = ["Ticker", "Stage2 Date", "Signal Quality", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
             styled = df_s2[cols].style.format({
                 "S2_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "S2_Return": "{:.2f}%"
             })\
             .applymap(lambda v: apply_text_styling(v, 'return'), subset=["S2_Return"])\
+            .applymap(lambda v: apply_text_styling(v, 'quality'), subset=["Signal Quality"])\
             .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["S2_Persistence", "RS Rating"])\
             .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["S2_Failure_Risk"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -960,13 +1035,14 @@ if st.session_state.results:
             st.markdown(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>", unsafe_allow_html=True)
             
             if not df_base.empty:
-                # SORT PRIORITY: Elite VCP -> Lowest Dist to Breakout -> Highest RS
+                # 🔥 CHANGE (FROM misc.docx): UPDATED SORT PRIORITY
                 df_base = df_base.sort_values(
-                    by=["Elite VCP", "Dist to Breakout %", "RS %"], 
-                    ascending=[False, True, False]
+                    by=["Elite VCP", "Base Duration", "Dist to Breakout %", "RS %"], 
+                    ascending=[False, False, True, False]
                 )
 
-                cols = ["Ticker", "Price", "Within 25% 52W High", "Elite VCP", "VCP Range %", "Dist to Breakout %", "RS %", "Vol Expansion"]
+                # 🔥 CHANGE (FROM misc.docx): ADDED "Base Duration" TO COLS
+                cols = ["Ticker", "Price", "Base Duration", "Within 25% 52W High", "Elite VCP", "VCP Range %", "Dist to Breakout %", "RS %", "Vol Expansion"]
                 
                 styled = df_base[cols].style.format({
                     "Price": "₹ {:.2f}", 
