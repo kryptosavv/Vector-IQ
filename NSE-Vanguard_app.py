@@ -49,27 +49,47 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. DATA LOADING LAYER (Cached) ---
+# --- 2. DATA LOADING LAYER (Fixed & Hardened) ---
 @st.cache_data(show_spinner=False, ttl=3600)
 def download_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
+    # Fix suffixes
     fixed_tickers = [t if t.endswith('.NS') or t == "^NSEI" else f"{t}.NS" for t in tickers]
     download_list = list(set(fixed_tickers + ["^NSEI"]))
     
-    try:
-        data = yf.download(
-            download_list,
-            period="5y",
-            group_by='ticker',
-            threads=True,
-            progress=False
-        )
-        return data
-    except Exception as e:
-        st.error(f"Download API failed: {e}")
-        return pd.DataFrame()
+    # FIX 4: Retry Logic
+    for attempt in range(2):
+        try:
+            # FIX 5: Download in Batches
+            all_data = []
+            for i in range(0, len(download_list), 10):
+                batch = download_list[i:i+10]
+                
+                # FIX 1: Threads False | FIX 2: Period 3y
+                batch_data = yf.download(
+                    batch,
+                    period="3y",      
+                    group_by='ticker',
+                    threads=False,    
+                    progress=False,
+                    auto_adjust=True
+                )
+                
+                if batch_data is not None and not batch_data.empty:
+                    all_data.append(batch_data)
+            
+            if all_data:
+                data = pd.concat(all_data, axis=1)
+                return data
+            else:
+                time.sleep(2) # Wait before retry if empty
+
+        except Exception:
+            time.sleep(2)
+            
+    return pd.DataFrame()
 
 # --- 3. HELPER: REGIME TILE RENDERER (ROUNDED, 5D, NON-OBSTRUCTING) ---
 def render_regime_tile(title, value, series, threshold, positive=True, suffix=""):
@@ -828,7 +848,8 @@ if 'results' not in st.session_state:
 
 # --- AUTO-RUN + MANUAL RUN LOGIC ---
 if tickers:
-    should_run = run_btn or (st.session_state.results is None)
+    # FIX 3: Disable Auto-Run on Page Load
+    should_run = run_btn 
     
     if should_run:
         msg = "Downloading data... this might take 30 seconds..."
@@ -1083,5 +1104,3 @@ if st.session_state.results:
             .applymap(color_slope, subset=["AD Slope 20D", "Net New Highs", "AD Change 20D"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else: st.info("No Breadth Data.")
-
-
