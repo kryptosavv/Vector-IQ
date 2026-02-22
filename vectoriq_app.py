@@ -357,6 +357,86 @@ def calculate_advanced_metrics(df, bench_series):
         "Base Duration": base_duration # 🔥 ADDED TO RETURN
     }
 
+# ==========================================
+# 🔥 CMBF ENGINE
+# ==========================================
+def calculate_cmbf_metrics(df, bench_series):
+    if df.empty or len(df) < 260:
+        return None
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    volume = df['Volume']
+    # --- EMAs ---
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    c = close.iloc[-1]
+    # --- 52W High Proximity ---
+    high_52 = high.rolling(252).max().iloc[-1]
+    near_high = c >= 0.95 * high_52 if high_52 > 0 else False
+    # --- Relative Strength ---
+    bench_series = bench_series.reindex(close.index).ffill()
+    rs_line = close / bench_series
+    rs_20 = rs_line.pct_change(20).iloc[-1]
+    rs_50 = rs_line.pct_change(50).iloc[-1]
+    rs_pass = (rs_20 > 0) and (rs_50 > 0)
+    # --- EMA Stack ---
+    ema_stack = (c > ema20.iloc[-1] > ema50.iloc[-1] > ema200.iloc[-1])
+    # --- RSI ---
+    def rsi(series, period=14):     
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(period).mean()
+        avg_loss = loss.rolling(period).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+    daily_rsi = rsi(close, 14).iloc[-1]
+    weekly = df.resample("W").last()
+    weekly_rsi = rsi(weekly['Close'], 14).iloc[-1] if len(weekly) > 20 else 50  
+    rsi_pass = (daily_rsi > 60) and (weekly_rsi > 60)
+    # --- Box (Last 20 Days) ---
+    box = df.tail(20)
+    hh = box['High'].max()
+    ll = box['Low'].min()
+    range_pct = (hh - ll) / ll if ll > 0 else 1
+    box_pass = range_pct < 0.08
+    # --- Volume Accumulation ---
+    up_vol = box.loc[box['Close'] > box['Close'].shift(), 'Volume'].sum()
+    down_vol = box.loc[box['Close'] < box['Close'].shift(), 'Volume'].sum()
+    vol_pass = up_vol > down_vol    
+    # --- ATR Classification ---
+    tr = np.maximum(
+        high - low,
+        np.maximum(abs(high - close.shift()), abs(low - close.shift()))
+    )
+    atr = tr.rolling(14).mean().iloc[-1]
+    atr_pct = atr / c if c > 0 else 0
+    protocol = "Kinetic" if atr_pct < 0.04 else "Affordable"
+    # --- Grading ---
+    score = 0
+    if rsi_pass: score += 1
+    if vol_pass: score += 1  
+    if score == 2:
+        grade = "A"
+    elif score == 1:
+        grade = "B"
+    else:
+        grade = "Reject"
+    if not (near_high and rs_pass and ema_stack and box_pass):
+        return None
+    return {
+        "Ticker": "",
+        "Price": c,
+        "Grade": grade, 
+        "Protocol": protocol,
+        "Daily RSI": round(daily_rsi, 1),
+        "Weekly RSI": round(weekly_rsi, 1),
+        "Box Range %": round(range_pct * 100, 2),
+        "ATR %": round(atr_pct * 100, 2)
+    }
+
 # --- 5. EVENT DATE METRICS ENGINE ---
 def calculate_metrics_on_date(df, bench_series, event_date):
     if bench_series is None or bench_series.empty:
@@ -527,7 +607,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     
     if raw_data.empty:
         st.error("⚠️ Data download failed. Please check your internet or ticker list.")
-        return [], [], [], [], [] 
+        return [], [], [], [], [], [] 
     
     status_text.text("📊 Calculating Breadth...")
     breadth_data = calculate_market_breadth(raw_data, start_date, end_date)
@@ -544,6 +624,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     pop_results = []
     stage2_results = []
     current_state_results = [] 
+    cmbf_results = []
     
     if isinstance(raw_data.columns, pd.MultiIndex):
         downloaded_tickers = list(set([col[0] for col in raw_data.columns]))
@@ -553,7 +634,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     
     if not downloaded_tickers:
         st.warning("⚠️ No stock data found. Check if tickers have '.NS' suffix.")
-        return [], [], [], breadth_data, []
+        return [], [], [], breadth_data, [], []
 
     total = len(downloaded_tickers)
     
@@ -608,8 +689,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                         ath_results.append(record)
 
             # --- 2. VOL POP CHECK ---
-            pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2
-             * range_df['Vol_MA50'])
+            pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2 * range_df['Vol_MA50'])
             pop_days = range_df[pop_mask]
             
             if not pop_days.empty:
@@ -681,11 +761,19 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                 curr_metrics["Ticker"] = ticker.replace(".NS", "")
                 current_state_results.append(curr_metrics)
 
+            # --- 5. CMBF FILTER ---
+            for event_date in range_df.index:
+                cmbf_metrics = calculate_cmbf_metrics(df.loc[:event_date], bench_data)
+                if cmbf_metrics:
+                    cmbf_metrics["Ticker"] = ticker.replace(".NS", "")
+                    cmbf_metrics["CMBF Date"] = event_date.date()
+                    cmbf_results.append(cmbf_metrics)
+
         except Exception: 
             continue
 
-    if not any([ath_results, pop_results, stage2_results, current_state_results]):
-        return [], [], [], breadth_data, []
+    if not any([ath_results, pop_results, stage2_results, current_state_results, cmbf_results]):
+        return [], [], [], breadth_data, [], []
     
     # --- POST-PROCESSING ---
     df_current = pd.DataFrame(current_state_results)
@@ -709,7 +797,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
         df_s2 = pd.DataFrame(stage2_results)
         stage2_list = df_s2.to_dict('records')
 
-    return ath_results, full_scan_list, pop_results, breadth_data, stage2_list
+    return ath_results, full_scan_list, pop_results, breadth_data, stage2_list, cmbf_results
 
 # --- 8. UTILS: STYLING ---
 def apply_text_styling(val, mode='standard'):
@@ -843,7 +931,7 @@ if tickers:
 
 # --- TOP BREADTH DASHBOARD ---
 if st.session_state.results:
-    ath, full_scan, breakouts, breadth, stage2 = st.session_state.results
+    ath, full_scan, breakouts, breadth, stage2, cmbf = st.session_state.results
     
     if breadth:
         df_breadth = pd.DataFrame(breadth)
@@ -892,12 +980,13 @@ if st.session_state.results:
 
             st.markdown(f"<div class='metric-box'>{regime_label}</div>", unsafe_allow_html=True)
 
-    tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_breadth = st.tabs([
+    tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_cmbf, tab_breadth = st.tabs([
         "📈 Stage 2 Breakouts", 
         "⚡ ATH Breakouts", 
         "💥 Volume Poppers", 
         "🔭 Trend Watch",
         "🧱 Base Builder",
+        "📦 CMBF",
         "📊 Market Breadth"
     ])
 
@@ -1060,7 +1149,42 @@ if st.session_state.results:
                 st.warning("No stocks found matching the criteria (RS>=60, Basic VCP + [Elite VCP OR Near 52WH]).")
         else: st.info("No data available.")
 
-    # 6. MARKET BREADTH
+    # 6. CMBF TAB
+    with tab_cmbf:
+        df_cmbf = pd.DataFrame(cmbf)
+        if df_cmbf.empty:
+            st.info("No CMBF setups found.")
+        else:
+            df_cmbf = df_cmbf[df_cmbf["Grade"] != "Reject"]
+            
+            if df_cmbf.empty:
+                st.info("No valid CMBF setups found after removing Rejects.")
+            else:
+                # --- FILTER ---
+                all_tickers = sorted(df_cmbf["Ticker"].unique())
+                selected_tickers = st.multiselect("Filter by Ticker", all_tickers, key="cmbf_filter")
+                
+                if selected_tickers:
+                    df_cmbf = df_cmbf[df_cmbf["Ticker"].isin(selected_tickers)]
+
+                # --- METRICS ---
+                entries_count = len(df_cmbf)
+                unique_count = df_cmbf["Ticker"].nunique()
+                st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
+                
+                # Sort by CMBF Date descending, then Grade A first
+                df_cmbf = df_cmbf.sort_values(by=["CMBF Date", "Grade", "ATR %"], ascending=[False, True, True])
+                
+                cols = ["Ticker", "CMBF Date", "Price", "Grade", "Protocol", "Daily RSI", "Weekly RSI", "Box Range %", "ATR %"]
+                styled = df_cmbf[cols].style.format({        
+                    "Price": "₹ {:.2f}",            
+                    "ATR %": "{:.2f}%",            
+                    "Box Range %": "{:.2f}%"        
+                })        
+                st.dataframe(styled, use_container_width=True, hide_index=True)        
+                copy_tv(df_cmbf.to_dict('records'))
+
+    # 7. MARKET BREADTH
     with tab_breadth:
         st.markdown("### 📊 Market Regime & Internals")
         if breadth:
