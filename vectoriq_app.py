@@ -873,10 +873,10 @@ if st.session_state.results:
             styled = df_s2[cols].style.format({
                 "S2_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "S2_Return": "{:.2f}%"
             })\
-            .applymap(lambda v: apply_text_styling(v, 'return'), subset=["S2_Return"])\
-            .applymap(lambda v: apply_text_styling(v, 'quality'), subset=["Signal Quality"])\
-            .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["S2_Persistence", "RS Rating"])\
-            .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["S2_Failure_Risk"])
+            .map(lambda v: apply_text_styling(v, 'return'), subset=["S2_Return"])\
+            .map(lambda v: apply_text_styling(v, 'quality'), subset=["Signal Quality"])\
+            .map(lambda v: apply_text_styling(v, 'standard'), subset=["S2_Persistence", "RS Rating"])\
+            .map(lambda v: apply_text_styling(v, 'inverse'), subset=["S2_Failure_Risk"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
             copy_tv(df_s2.to_dict('records'))
 
@@ -899,9 +899,9 @@ if st.session_state.results:
             styled = df_ath[cols].style.format({
                 "ATH_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "ATH_Return": "{:.2f}%"
             })\
-            .applymap(lambda v: apply_text_styling(v, 'return'), subset=["ATH_Return"])\
-            .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["ATH_Failure_Risk"])\
-            .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["ATH_Persistence", "RS Rating"])
+            .map(lambda v: apply_text_styling(v, 'return'), subset=["ATH_Return"])\
+            .map(lambda v: apply_text_styling(v, 'inverse'), subset=["ATH_Failure_Risk"])\
+            .map(lambda v: apply_text_styling(v, 'standard'), subset=["ATH_Persistence", "RS Rating"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
             copy_tv(df_ath.to_dict('records'))
 
@@ -924,10 +924,10 @@ if st.session_state.results:
             styled = df_pop[cols].style.format({
                 "Pop_Event_Price": "₹ {:.2f}", "LTP": "₹ {:.2f}", "Pop_Return": "{:.2f}%", "Pop_Vol_Expansion": "{:.2f}x"
             })\
-            .applymap(lambda v: apply_text_styling(v, 'return'), subset=["Pop_Return"])\
-            .applymap(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Pop_Vol_Expansion"])\
-            .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Pop_Failure_Risk"])\
-            .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Pop_Persistence", "RS Rating"])
+            .map(lambda v: apply_text_styling(v, 'return'), subset=["Pop_Return"])\
+            .map(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Pop_Vol_Expansion"])\
+            .map(lambda v: apply_text_styling(v, 'inverse'), subset=["Pop_Failure_Risk"])\
+            .map(lambda v: apply_text_styling(v, 'standard'), subset=["Pop_Persistence", "RS Rating"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
             copy_tv(df_pop.to_dict('records'))
 
@@ -940,8 +940,8 @@ if st.session_state.results:
             
             cols = ["Ticker", "Price", "Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Failure Risk", "Persistence"]
             styled = df[cols].style.format({"Price": "₹ {:.2f}", "Rocket Score": "{:.2f}"})\
-                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Persistence"])\
-                .applymap(lambda v: apply_text_styling(v, 'inverse'), subset=["Failure Risk"])
+                .map(lambda v: apply_text_styling(v, 'standard'), subset=["Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Persistence"])\
+                .map(lambda v: apply_text_styling(v, 'inverse'), subset=["Failure Risk"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
             copy_tv(df.to_dict('records'))
         else: st.info("No Trend Watch Setups found.")
@@ -969,9 +969,9 @@ if st.session_state.results:
                     "Dist to Breakout %": "{:.2f}%",
                     "Vol Expansion": "{:.2f}x"
                 })\
-                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["Elite VCP", "Within 25% 52W High"])\
-                .applymap(lambda v: apply_text_styling(v, 'standard'), subset=["RS %"])\
-                .applymap(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Vol Expansion"])
+                .map(lambda v: apply_text_styling(v, 'standard'), subset=["Elite VCP", "Within 25% 52W High"])\
+                .map(lambda v: apply_text_styling(v, 'standard'), subset=["RS %"])\
+                .map(lambda v: apply_text_styling(v, 'vol_expansion'), subset=["Vol Expansion"])
                 
                 st.dataframe(styled, use_container_width=True, hide_index=True)
                 copy_tv(df_base.to_dict('records'))
@@ -1027,8 +1027,8 @@ if st.session_state.results:
                 "AD Slope 20D": "{:.2f}%", "AD Change 20D": "{:.2f}", "Rolling BO Success 10D": "{:.1f}%",
                 "% Above 20 DMA": "{:.2f}%", "% Above 200 DMA": "{:.2f}%", "% Breaking < 20 DMA": "{:.2f}%"
             })\
-            .applymap(color_breadth, subset=["% Above 20 DMA", "% Above 200 DMA"])\
-            .applymap(lambda v: apply_text_styling(v, 'bo_success'), subset=["Rolling BO Success 10D"])\
-            .applymap(color_slope, subset=["AD Slope 20D", "Net New Highs", "AD Change 20D"])
+            .map(color_breadth, subset=["% Above 20 DMA", "% Above 200 DMA"])\
+            .map(lambda v: apply_text_styling(v, 'bo_success'), subset=["Rolling BO Success 10D"])\
+            .map(color_slope, subset=["AD Slope 20D", "Net New Highs", "AD Change 20D"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else: st.info("No Breadth Data.")
