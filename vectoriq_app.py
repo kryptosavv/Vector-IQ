@@ -16,42 +16,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS FOR ROUNDED CORNERS & CLEAN UI (Fixed for rendering bugs) ---
-st.markdown("""
-<style>
-    /* Protect Streamlit Material Icons from breaking */
-    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@48,400,0,0');
-    .material-symbols-rounded { font-family: 'Material Symbols Rounded' !important; }
-    
-    .main-title { font-size: 3em; font-weight: bold; color: #FF4B4B; margin-bottom: -10px; }
-    .sub-title { font-size: 1.2em; color: var(--text-color); opacity: 0.7; margin-bottom: 20px; }
-    .date-banner {
-        background-color: rgba(255, 75, 75, 0.1); 
-        color: var(--text-color);
-        padding: 10px 15px; 
-        border-radius: 5px; 
-        border-left: 5px solid #FF4B4B;
-        font-weight: bold;
-        margin-bottom: 20px;
-    }
-    .metric-box {
-        padding: 12px;
-        background-color: rgba(0, 255, 136, 0.1); 
-        color: #00FF88; 
-        border-radius: 8px;
-        margin-bottom: 15px;
-        font-weight: bold;
-        text-align: center;
-        border: 1px solid rgba(0, 255, 136, 0.3);
-        font-size: 1.1em;
-    }
-    [data-testid="stPlotlyChart"] {
-        border-radius: 15px;
-        overflow: hidden;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    }
-</style>
-""", unsafe_allow_html=True)
+# --- CSS FOR ROUNDED CORNERS & CLEAN UI (Fixed Markdown Leaks & Font Clashes) ---
+css = """<style>
+.main-title { font-size: 3em; font-weight: bold; color: #FF4B4B; margin-bottom: -10px; }
+.sub-title { font-size: 1.2em; color: var(--text-color); opacity: 0.7; margin-bottom: 20px; }
+.date-banner { background-color: rgba(255, 75, 75, 0.1); color: var(--text-color); padding: 10px 15px; border-radius: 5px; border-left: 5px solid #FF4B4B; font-weight: bold; margin-bottom: 20px; }
+.metric-box { padding: 12px; background-color: rgba(0, 255, 136, 0.1); color: #00FF88; border-radius: 8px; margin-bottom: 15px; font-weight: bold; text-align: center; border: 1px solid rgba(0, 255, 136, 0.3); font-size: 1.1em; }
+[data-testid="stPlotlyChart"] { border-radius: 15px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); }
+</style>"""
+st.markdown(css, unsafe_allow_html=True)
 
 # --- 2. DATA LOADING LAYER ---
 @st.cache_data(show_spinner=False, ttl=1800)
@@ -332,7 +305,8 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             df['High_20'], df['High_50'] = df['High'].rolling(20).max().shift(1), df['High'].rolling(50).max().shift(1)
             df['SMA200_Rising'] = df['SMA200'] > df['SMA200'].shift(20)
 
-            df['RS_Line'] = df['Close'] / bench_data.reindex(df.index).ffill()
+            bench_aligned = bench_data.reindex(df.index).ffill()
+            df['RS_Line'] = df['Close'] / bench_aligned
             df['RS_Mom_Ratio'] = df['RS_Line'] / df['RS_Line'].shift(20)
             df['RS_Score'] = (((df['RS_Line'] - df['RS_Line'].shift(20)) / df['RS_Line'].shift(20)) * 10).clip(0, 1) * 100
 
@@ -460,7 +434,6 @@ with st.sidebar:
     st.divider()
     run_btn = st.button("🧮 Run Vector Engine", type="primary", use_container_width=True)
 
-# UI RENDER - Ensure HTML strings are flawless to prevent text leaking
 st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
@@ -499,14 +472,15 @@ if st.session_state.results:
 
     tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_cmbf, tab_breadth = st.tabs(["📈 Stage 2 Breakouts", "⚡ ATH Breakouts", "💥 Volume Poppers", "🔭 Trend Watch", "🧱 Base Builder", "📦 CMBF", "📊 Market Breadth"])
 
-    # FIX: Replaced buggy Streamlit code block component with clean text areas
+    # FIX: Batch copy blocks fixed, passing `language=None` prevents Streamlit Javascript crash.
     def copy_tv(data):
         if not data: return
         unique_tickers = list(dict.fromkeys([f"NSE:{x['Ticker']}" for x in data]))
         batches = [", ".join(unique_tickers[i:i+30]) for i in range(0, len(unique_tickers), 30)]
         st.markdown("### 📋 TradingView Watchlist")
         for i, b in enumerate(batches):
-            st.text_area("Batch", b, height=68, label_visibility="collapsed", key=f"tv_{b[:10]}_{i}")
+            st.markdown(f"**Batch {i+1} ({len(unique_tickers[i*30:(i*30)+30])} items)**")
+            st.code(b, language=None)
 
     with tab_stage2:
         df_s2 = pd.DataFrame(stage2)
