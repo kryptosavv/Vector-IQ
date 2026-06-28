@@ -19,6 +19,8 @@ st.set_page_config(
 # --- CSS FOR ROUNDED CORNERS & CLEAN UI ---
 st.html("""
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0');
+    
     .main-title {font-size: 3em; font-weight: bold; color: #FF4B4B;}
     .sub-title {font-size: 1.2em; color: #555;}
     .date-banner {
@@ -45,6 +47,10 @@ st.html("""
         border-radius: 15px;
         overflow: hidden;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    }
+    /* HIDE SIDEBAR ICON TEXT OVERFLOW FALLBACK */
+    [data-testid="collapsedControl"] {
+        overflow: hidden;
     }
     </style>
 """)
@@ -849,7 +855,8 @@ if st.session_state.results:
         unique_tickers = list(dict.fromkeys([f"NSE:{x['Ticker']}" for x in data]))
         batches = [", ".join(unique_tickers[i:i+30]) for i in range(0, len(unique_tickers), 30)]
         st.markdown("### 📋 TradingView Watchlist")
-        for b in batches: st.code(b, language="text")
+        for idx, b in enumerate(batches): 
+            st.text_area(label=f"Batch {idx+1}", value=b, label_visibility="collapsed")
 
     with tab_stage2:
         df_s2 = pd.DataFrame(stage2)
