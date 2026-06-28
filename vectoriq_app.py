@@ -17,41 +17,51 @@ st.set_page_config(
 )
 
 # --- CSS FOR ROUNDED CORNERS & CLEAN UI ---
-st.html("""
+st.markdown("""
     <style>
-    .main-title {font-size: 3em; font-weight: bold; color: #FF4B4B;}
-    .sub-title {font-size: 1.2em; color: #555;}
+    .main-title {
+        font-size: 3em; 
+        font-weight: bold; 
+        color: #FF4B4B; 
+        margin-bottom: -10px;
+    }
+    .sub-title {
+        font-size: 1.2em; 
+        color: var(--text-color); 
+        opacity: 0.7;
+        margin-bottom: 20px;
+    }
     .date-banner {
-        background-color: #000000; 
-        color: #ffffff;
-        padding: 10px; 
+        background-color: rgba(255, 75, 75, 0.1); 
+        color: var(--text-color);
+        padding: 10px 15px; 
         border-radius: 5px; 
         border-left: 5px solid #FF4B4B;
         font-weight: bold;
         margin-bottom: 20px;
     }
     .metric-box {
-        padding: 10px;
-        background-color: #c3e6cb; 
-        color: #0f5132; 
-        border-radius: 5px;
-        margin-bottom: 10px;
+        padding: 12px;
+        background-color: rgba(0, 255, 136, 0.1); 
+        color: #00FF88; 
+        border-radius: 8px;
+        margin-bottom: 15px;
         font-weight: bold;
         text-align: center;
-        border: 1px solid #b1dfbb;
+        border: 1px solid rgba(0, 255, 136, 0.3);
+        font-size: 1.1em;
     }
-    /* ROUNDED CORNERS FOR PLOTLY TILES */
-    .stPlotlyChart {
+    [data-testid="stPlotlyChart"] {
         border-radius: 15px;
         overflow: hidden;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
     }
     </style>
-""")
+""", unsafe_allow_html=True)
 
-# --- 2. DATA LOADING LAYER (Cached & Optimized to 2y) ---
-@st.cache_data(show_spinner=False, ttl=3600)
-def download_data(tickers):
+# --- 2. DATA LOADING LAYER (Renamed to bust cache) ---
+@st.cache_data(show_spinner=False, ttl=1800)
+def download_market_data(tickers):
     if not tickers:
         return pd.DataFrame()
     
@@ -61,27 +71,34 @@ def download_data(tickers):
     try:
         data = yf.download(
             download_list,
-            period="2y", # 🔥 OPTIMIZED: Reduced from 5y to 2y to speed up download and processing
+            period="2y", 
             group_by='ticker',
             threads=True,
             progress=False
         )
+        # 🔥 FIX: Strip timezones from yfinance data to fix date slicing bugs
+        if data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
+            
         return data
     except Exception as e:
         st.error(f"Download API failed: {e}")
         return pd.DataFrame()
 
-# --- 3. HELPER: REGIME TILE RENDERER (ROUNDED, 5D, NON-OBSTRUCTING) ---
+# --- 3. HELPER: REGIME TILE RENDERER ---
 def render_regime_tile(title, value, series, threshold, positive=True, suffix=""):
+    if pd.isna(value): return
+    
     if positive:
         regime_color = "#00FF88" if value >= threshold else "#FF4B4B"
     else:
         regime_color = "#00FF88" if value <= threshold else "#FF4B4B"
 
-    series_5d = series.tail(5)
-    dates_5d = series_5d.index.strftime('%Y-%m-%d').tolist() if hasattr(series_5d.index, 'strftime') else list(range(len(series_5d)))
+    series_5d = series.dropna().tail(5)
+    if series_5d.empty: return
     
-    prev_val = series.iloc[-2] if len(series) >= 2 else value
+    dates_5d = series_5d.index.strftime('%Y-%m-%d').tolist() if hasattr(series_5d.index, 'strftime') else list(range(len(series_5d)))
+    prev_val = series_5d.iloc[-2] if len(series_5d) >= 2 else value
 
     fig = make_subplots(
         rows=2, cols=1,
@@ -129,7 +146,7 @@ def render_regime_tile(title, value, series, threshold, positive=True, suffix=""
 
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-# --- 4. METRIC ENGINE (Updated with Vectorized Base Duration) ---
+# --- 4. METRIC ENGINE ---
 def calculate_advanced_metrics(df, bench_series):
     if df.empty or len(df) < 260: return None
 
@@ -149,9 +166,9 @@ def calculate_advanced_metrics(df, bench_series):
     dist_52w_high_pct = ((h52 - c) / h52) * 100 if h52 > 0 else 100
 
     s50, s150, s200 = sma50.iloc[-1], sma150.iloc[-1], sma200.iloc[-1]
-    d50 = (c - s50) / s50
-    d150 = (c - s150) / s150
-    d200 = (c - s200) / s200
+    d50 = (c - s50) / s50 if s50 > 0 else 0
+    d150 = (c - s150) / s150 if s150 > 0 else 0
+    d200 = (c - s200) / s200 if s200 > 0 else 0
     ma_dist_score = min(max((d50 + d150 + d200) * 200, 0), 50)
     
     spread = (s50 - s200) / s200 if s200 > 0 else 0
@@ -245,7 +262,6 @@ def calculate_advanced_metrics(df, bench_series):
     base_high = high.iloc[-base_len:].max()
     dist_to_breakout = ((base_high - c) / base_high) * 100 if base_high > 0 else 100
 
-    # 🔥 OPTIMIZED: Vectorized Base Duration logic (Replaces slow for-loop)
     base_low = low.iloc[-base_len:].min()
     base_high = high.iloc[-base_len:].max()
     max_duration = base_len * 2 
@@ -315,8 +331,6 @@ def calculate_market_breadth(raw_data, start_date, end_date):
         highs = stock_data.xs('High', level=1, axis=1)
         lows = stock_data.xs('Low', level=1, axis=1)
         
-        universe_size = closes.shape[1]
-
         sma20 = closes.rolling(20).mean()
         sma200 = closes.rolling(200).mean()
         above_20dma = (closes > sma20)
@@ -404,10 +418,10 @@ def calculate_market_breadth(raw_data, start_date, end_date):
     except Exception as e:
         return []
 
-# --- 6. SCANNER ORCHESTRATOR (Highly Vectorized) ---
+# --- 6. SCANNER ORCHESTRATOR ---
 def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
     status_text.text("🔌 Downloading Data...")
-    raw_data = download_data(tickers)
+    raw_data = download_market_data(tickers)
     
     if raw_data.empty:
         st.error("⚠️ Data download failed. Please check your internet or ticker list.")
@@ -446,22 +460,17 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
         try:
             df = raw_data[ticker].copy()
             
-            # 🔥 FIX: Drop NaN values in Close to ensure iloc[-1] always pulls a valid number
-            df.dropna(subset=['Close'], inplace=True)
+            # 🔥 BULLETPROOF LTP EXTRACTION
+            df['Close'] = df['Close'].ffill()
+            valid_closes = df['Close'].dropna()
+            if valid_closes.empty or len(df) < 260: continue
             
-            if df.empty or len(df) < 260: continue
+            current_ltp = float(valid_closes.iloc[-1])
             
-            # 🔥 FIX: Explicitly store the clean Last Traded Price (LTP)
-            current_ltp = float(df['Close'].iloc[-1])
-            
-            # LIQUIDITY FILTER (Dollar Volume)
             df['Dollar_Vol'] = df['Close'] * df['Volume']
             avg_dollar_vol = df['Dollar_Vol'].rolling(50).mean().iloc[-1]
             if avg_dollar_vol < 1_00_000_000: continue
 
-            # ==========================================
-            # PRE-CALCULATE ALL INDICATORS FOR ENTIRE DF
-            # ==========================================
             df['SMA20'] = df['Close'].rolling(20).mean()
             df['SMA50'] = df['Close'].rolling(50).mean()
             df['SMA150'] = df['Close'].rolling(150).mean()
@@ -472,14 +481,12 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             df['Prev_ATH'] = df['High'].expanding().max().shift(1)
             df['SMA200_Rising'] = df['SMA200'] > df['SMA200'].shift(20)
 
-            # Benchmark alignment & Base Metrics
             bench_aligned = bench_data.reindex(df.index).ffill()
             df['RS_Line'] = df['Close'] / bench_aligned
             df['RS_Mom_Ratio'] = df['RS_Line'] / df['RS_Line'].shift(20)
             df['RS_Mom_Pct'] = (df['RS_Line'] - df['RS_Line'].shift(20)) / df['RS_Line'].shift(20)
             df['RS_Score'] = (df['RS_Mom_Pct'] * 10).clip(0, 1) * 100
 
-            # Volume & Risk Metrics
             df['Vol_Exp'] = df['Volume'] / df['Vol_MA50']
             hl_diff = df['High'] - df['Low']
             close_loc = (df['Close'] - df['Low']) / hl_diff.replace(0, np.nan)
@@ -496,7 +503,6 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                             np.where(df['Vol_Exp'] > 1.2, 10, 0)
             df['Persist'] = df['Persist'].clip(upper=100)
 
-            # CMBF Pre-Calculations
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
             df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
@@ -532,7 +538,6 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             df['ATR'] = tr.rolling(14).mean()
             df['ATR_Pct'] = df['ATR'] / df['Close'].replace(0, np.nan)
 
-            # --- DATE SLICE ---
             mask_range = (df.index.date >= start_date) & (df.index.date <= end_date)
             range_df = df.loc[mask_range]
             
@@ -541,34 +546,36 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             # --- 1. ATH CHECK ---
             ath_break = range_df[range_df['Close'] > range_df['Prev_ATH']]
             for event_date, row in ath_break.iterrows():
+                event_price = float(row["Close"])
                 record = {
                     "Ticker": ticker.replace(".NS", ""),
                     "ATH Date": event_date.date(),
-                    "ATH_Event_Price": row["Close"],
+                    "ATH_Event_Price": event_price,
                     "LTP": current_ltp,
                     "ATH_Vol_Expansion": round(row["Vol_Exp"], 2),
                     "ATH_Failure_Risk": int(row["Failure_Risk"]),
                     "ATH_Persistence": int(row["Persist"]),
                     "RS Rating": int(row["RS_Score"])
                 }
-                record["ATH_Return"] = ((record["LTP"] - record["ATH_Event_Price"]) / record["ATH_Event_Price"]) * 100
+                record["ATH_Return"] = float(((current_ltp - event_price) / event_price) * 100) if event_price > 0 else 0.0
                 ath_results.append(record)
 
             # --- 2. VOL POP CHECK ---
             pop_mask = (range_df['Close'] > range_df['High_20']) & (range_df['Volume'] > 1.2 * range_df['Vol_MA50'])
             pop_days = range_df[pop_mask]
             for event_date, row in pop_days.iterrows():
+                event_price = float(row["Close"])
                 record = {
                     "Ticker": ticker.replace(".NS", ""),
                     "Pop Date": event_date.date(),
-                    "Pop_Event_Price": row["Close"],
+                    "Pop_Event_Price": event_price,
                     "LTP": current_ltp,
                     "Pop_Vol_Expansion": round(row["Vol_Exp"], 2),
                     "Pop_Failure_Risk": int(row["Failure_Risk"]),
                     "Pop_Persistence": int(row["Persist"]),
                     "RS Rating": int(row["RS_Score"])
                 }
-                record["Pop_Return"] = ((record["LTP"] - record["Pop_Event_Price"]) / record["Pop_Event_Price"]) * 100
+                record["Pop_Return"] = float(((current_ltp - event_price) / event_price) * 100) if event_price > 0 else 0.0
                 pop_results.append(record)
 
             # --- 3. STAGE 2 CHECK ---
@@ -588,10 +595,11 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                     elif row["RS_Score"] >= 60:
                         quality = "Medium"
 
+                    event_price = float(row["Close"])
                     record = {
                         "Ticker": ticker.replace(".NS", ""),
                         "Stage2 Date": event_date.date(),
-                        "S2_Event_Price": row["Close"],
+                        "S2_Event_Price": event_price,
                         "LTP": current_ltp,
                         "S2_Vol_Expansion": round(row["Vol_Exp"], 2),
                         "S2_Failure_Risk": int(row["Failure_Risk"]),
@@ -600,10 +608,10 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                         "RS Rating": int(row["RS_Score"]),
                         "Signal Quality": quality
                     }
-                    record["S2_Return"] = ((record["LTP"] - record["S2_Event_Price"]) / record["S2_Event_Price"]) * 100
+                    record["S2_Return"] = float(((current_ltp - event_price) / event_price) * 100) if event_price > 0 else 0.0
                     stage2_results.append(record)
 
-            # --- 4. CURRENT STATE (ROCKETS + BASE BUILDER) ---
+            # --- 4. CURRENT STATE ---
             df_end = df.loc[:end_date]
             bench_aligned_end = bench_data.reindex(df_end.index).ffill()
             curr_metrics = calculate_advanced_metrics(df_end, bench_aligned_end)
@@ -611,7 +619,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                 curr_metrics["Ticker"] = ticker.replace(".NS", "")
                 current_state_results.append(curr_metrics)
 
-            # --- 5. CMBF FILTER (Vectorized) ---
+            # --- 5. CMBF FILTER ---
             cmbf_mask = range_df['Near_High'] & range_df['RS_Pass'] & range_df['EMA_Stack'] & range_df['Box_Pass']
             cmbf_days = range_df[cmbf_mask]
             
@@ -629,7 +637,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                 cmbf_results.append({
                     "Ticker": ticker.replace(".NS", ""),
                     "CMBF Date": event_date.date(),
-                    "Price": row['Close'],
+                    "Price": float(row['Close']),
                     "Grade": grade,
                     "Protocol": protocol,
                     "Daily RSI": round(row['Daily_RSI'], 1),
@@ -667,10 +675,13 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
 
     return ath_results, full_scan_list, pop_results, breadth_data, stage2_list, cmbf_results
 
-# --- 7. UTILS: STYLING ---
+# --- 7. UTILS: STYLING (SAFEGUARDED) ---
 def apply_text_styling(val, mode='standard'):
+    if pd.isna(val) or val is None:
+        return ''
+        
     if isinstance(val, bool):
-        return 'color: #00FF88; font-weight: bold;' if val else 'color: #333;'
+        return 'color: #00FF88; font-weight: bold;' if val else 'color: #888;'
 
     if not isinstance(val, (int, float)): 
         if mode == 'quality':
@@ -763,17 +774,17 @@ last_refreshed = ist_time.strftime("%Y-%m-%d | %H:%M:%S")
 col_header, col_refresh = st.columns([3, 1])
 
 with col_header:
-    st.html('<div class="main-title">Vector IQ</div>')
-    st.html('<div class="sub-title">Breadth. Breakouts. Regime.</div>')
+    st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
 
 with col_refresh:
-    st.html(f"""
-    <div style="text-align: right; color: gray; font-size: 0.9em; padding-top: 20px;">
+    st.markdown(f"""
+    <div style="text-align: right; color: var(--text-color); opacity: 0.7; font-size: 0.9em; padding-top: 20px;">
         Last Refreshed:<br><b>{last_refreshed}</b>
     </div>
-    """)
+    """, unsafe_allow_html=True)
 
-st.html(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>')
+st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
 
 if 'results' not in st.session_state:
     st.session_state.results = None
@@ -839,7 +850,7 @@ if st.session_state.results:
             else:
                 regime_label = "🟡 TRANSITIONAL"
 
-            st.html(f"<div class='metric-box'>{regime_label}</div>")
+            st.markdown(f"<div class='metric-box'>{regime_label}</div>", unsafe_allow_html=True)
 
     tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_cmbf, tab_breadth = st.tabs([
         "📈 Stage 2 Breakouts", 
@@ -874,7 +885,7 @@ if st.session_state.results:
 
             entries_count = len(df_s2)
             unique_count = df_s2["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
             
             cols = ["Ticker", "Stage2 Date", "Signal Quality", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
             styled = df_s2[cols].style.format({
@@ -900,7 +911,7 @@ if st.session_state.results:
 
             entries_count = len(df_ath)
             unique_count = df_ath["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
 
             cols = ["Ticker", "ATH Date", "ATH_Event_Price", "LTP", "ATH_Return", "RS Rating", "ATH_Persistence", "ATH_Failure_Risk"]
             styled = df_ath[cols].style.format({
@@ -925,7 +936,7 @@ if st.session_state.results:
 
             entries_count = len(df_pop)
             unique_count = df_pop["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
 
             cols = ["Ticker", "Pop Date", "Pop_Event_Price", "LTP", "Pop_Return", "RS Rating", "Pop_Vol_Expansion", "Pop_Failure_Risk", "Pop_Persistence"]
             styled = df_pop[cols].style.format({
@@ -943,7 +954,7 @@ if st.session_state.results:
             df = pd.DataFrame(full_scan)
             df = df[df['Rocket Score'] >= 50].sort_values(by="Rocket Score", ascending=False)
             
-            st.html(f"<div class='metric-box'>Found {len(df)} Trend Watch Setups</div>")
+            st.markdown(f"<div class='metric-box'>Found {len(df)} Trend Watch Setups</div>", unsafe_allow_html=True)
             
             cols = ["Ticker", "Price", "Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Failure Risk", "Persistence"]
             styled = df[cols].style.format({"Price": "₹ {:.2f}", "Rocket Score": "{:.2f}"})\
@@ -960,7 +971,7 @@ if st.session_state.results:
             df_base = df_base[df_base["Basic VCP"] == True]
             df_base = df_base[ (df_base["Within 25% 52W High"] == True) | (df_base["Elite VCP"] == True) ]
             
-            st.html(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>")
+            st.markdown(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>", unsafe_allow_html=True)
             
             if not df_base.empty:
                 df_base = df_base.sort_values(
@@ -1004,7 +1015,7 @@ if st.session_state.results:
 
                 entries_count = len(df_cmbf)
                 unique_count = df_cmbf["Ticker"].nunique()
-                st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+                st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
                 
                 df_cmbf = df_cmbf.sort_values(by=["CMBF Date", "Grade", "ATR %"], ascending=[False, True, True])
                 
@@ -1023,12 +1034,15 @@ if st.session_state.results:
             df = pd.DataFrame(breadth)
             cols = ["Date", "New Highs", "New Lows", "Net New Highs", "AD Slope 20D", "AD Change 20D", "Rolling BO Success 10D", "% Above 20 DMA", "% Breaking < 20 DMA", "% Above 200 DMA"]
             def color_breadth(val):
+                if pd.isna(val) or val is None: return ''
                 if isinstance(val, (int, float)):
                     if val > 70: return 'color: #008000; font-weight: bold;'
                     elif val > 40: return 'color: #DAA520; font-weight: bold;'
                     else: return 'color: #FF0000; font-weight: bold;'
                 return ''
-            def color_slope(val): return 'color: #008000; font-weight: bold;' if val > 0 else 'color: #FF0000; font-weight: bold;'
+            def color_slope(val): 
+                if pd.isna(val) or val is None: return ''
+                return 'color: #008000; font-weight: bold;' if val > 0 else 'color: #FF0000; font-weight: bold;'
 
             styled = df[cols].style.format({
                 "AD Slope 20D": "{:.2f}%", "AD Change 20D": "{:.2f}", "Rolling BO Success 10D": "{:.1f}%",
