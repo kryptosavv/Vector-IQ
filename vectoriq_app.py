@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 # --- CSS FOR ROUNDED CORNERS & CLEAN UI ---
-st.html("""
+st.markdown("""
     <style>
     .main-title {font-size: 3em; font-weight: bold; color: #FF4B4B;}
     .sub-title {font-size: 1.2em; color: #555;}
@@ -47,7 +47,7 @@ st.html("""
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
     }
     </style>
-""")
+""", unsafe_allow_html=True)
 
 # --- 2. DATA LOADING LAYER (Cached & Optimized to 2y) ---
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -756,17 +756,17 @@ last_refreshed = ist_time.strftime("%Y-%m-%d | %H:%M:%S")
 col_header, col_refresh = st.columns([3, 1])
 
 with col_header:
-    st.html('<div class="main-title">Vector IQ</div>')
-    st.html('<div class="sub-title">Breadth. Breakouts. Regime.</div>')
+    st.markdown('<div class="main-title">Vector IQ</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Breadth. Breakouts. Regime.</div>', unsafe_allow_html=True)
 
 with col_refresh:
-    st.html(f"""
+    st.markdown(f"""
     <div style="text-align: right; color: gray; font-size: 0.9em; padding-top: 20px;">
         Last Refreshed:<br><b>{last_refreshed}</b>
     </div>
-    """)
+    """, unsafe_allow_html=True)
 
-st.html(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>')
+st.markdown(f'<div class="date-banner">📅 Period: {s_d} — {e_d}</div>', unsafe_allow_html=True)
 
 if 'results' not in st.session_state:
     st.session_state.results = None
@@ -832,7 +832,7 @@ if st.session_state.results:
             else:
                 regime_label = "🟡 TRANSITIONAL"
 
-            st.html(f"<div class='metric-box'>{regime_label}</div>")
+            st.markdown(f"<div class='metric-box'>{regime_label}</div>", unsafe_allow_html=True)
 
     tab_stage2, tab_ath, tab_pop, tab_trend, tab_base, tab_cmbf, tab_breadth = st.tabs([
         "📈 Stage 2 Breakouts", 
@@ -867,7 +867,7 @@ if st.session_state.results:
 
             entries_count = len(df_s2)
             unique_count = df_s2["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
             
             cols = ["Ticker", "Stage2 Date", "Signal Quality", "S2_Event_Price", "LTP", "S2_Return", "RS Rating", "S2_Persistence", "S2_Failure_Risk"]
             styled = df_s2[cols].style.format({
@@ -893,7 +893,7 @@ if st.session_state.results:
 
             entries_count = len(df_ath)
             unique_count = df_ath["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
 
             cols = ["Ticker", "ATH Date", "ATH_Event_Price", "LTP", "ATH_Return", "RS Rating", "ATH_Persistence", "ATH_Failure_Risk"]
             styled = df_ath[cols].style.format({
@@ -918,7 +918,7 @@ if st.session_state.results:
 
             entries_count = len(df_pop)
             unique_count = df_pop["Ticker"].nunique()
-            st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+            st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
 
             cols = ["Ticker", "Pop Date", "Pop_Event_Price", "LTP", "Pop_Return", "RS Rating", "Pop_Vol_Expansion", "Pop_Failure_Risk", "Pop_Persistence"]
             styled = df_pop[cols].style.format({
@@ -936,7 +936,7 @@ if st.session_state.results:
             df = pd.DataFrame(full_scan)
             df = df[df['Rocket Score'] >= 50].sort_values(by="Rocket Score", ascending=False)
             
-            st.html(f"<div class='metric-box'>Found {len(df)} Trend Watch Setups</div>")
+            st.markdown(f"<div class='metric-box'>Found {len(df)} Trend Watch Setups</div>", unsafe_allow_html=True)
             
             cols = ["Ticker", "Price", "Rocket Score", "Trend Score", "RS %", "Tightness %", "Vol Dry Score", "Near Breakout", "Failure Risk", "Persistence"]
             styled = df[cols].style.format({"Price": "₹ {:.2f}", "Rocket Score": "{:.2f}"})\
@@ -953,7 +953,7 @@ if st.session_state.results:
             df_base = df_base[df_base["Basic VCP"] == True]
             df_base = df_base[ (df_base["Within 25% 52W High"] == True) | (df_base["Elite VCP"] == True) ]
             
-            st.html(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>")
+            st.markdown(f"<div class='metric-box'>Found {len(df_base)} Base Structures (RS >= 60)</div>", unsafe_allow_html=True)
             
             if not df_base.empty:
                 df_base = df_base.sort_values(
@@ -997,7 +997,7 @@ if st.session_state.results:
 
                 entries_count = len(df_cmbf)
                 unique_count = df_cmbf["Ticker"].nunique()
-                st.html(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>")
+                st.markdown(f"<div class='metric-box'>{entries_count} Entries | {unique_count} Unique Stocks</div>", unsafe_allow_html=True)
                 
                 df_cmbf = df_cmbf.sort_values(by=["CMBF Date", "Grade", "ATR %"], ascending=[False, True, True])
                 
