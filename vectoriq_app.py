@@ -237,7 +237,7 @@ def calculate_advanced_metrics(df, bench_series):
                 basic_vcp and
                 (d1 > d2) and       
                 (d2 > d3) and       
-                (d3 < 12)           
+                (d3 < 12)            
             )
         except:
             elite_vcp = False
@@ -445,7 +445,14 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
         
         try:
             df = raw_data[ticker].copy()
+            
+            # 🔥 FIX: Drop NaN values in Close to ensure iloc[-1] always pulls a valid number
+            df.dropna(subset=['Close'], inplace=True)
+            
             if df.empty or len(df) < 260: continue
+            
+            # 🔥 FIX: Explicitly store the clean Last Traded Price (LTP)
+            current_ltp = float(df['Close'].iloc[-1])
             
             # LIQUIDITY FILTER (Dollar Volume)
             df['Dollar_Vol'] = df['Close'] * df['Volume']
@@ -453,7 +460,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
             if avg_dollar_vol < 1_00_000_000: continue
 
             # ==========================================
-            # 🔥 PRE-CALCULATE ALL INDICATORS FOR ENTIRE DF
+            # PRE-CALCULATE ALL INDICATORS FOR ENTIRE DF
             # ==========================================
             df['SMA20'] = df['Close'].rolling(20).mean()
             df['SMA50'] = df['Close'].rolling(50).mean()
@@ -538,7 +545,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                     "Ticker": ticker.replace(".NS", ""),
                     "ATH Date": event_date.date(),
                     "ATH_Event_Price": row["Close"],
-                    "LTP": df.iloc[-1]['Close'],
+                    "LTP": current_ltp,
                     "ATH_Vol_Expansion": round(row["Vol_Exp"], 2),
                     "ATH_Failure_Risk": int(row["Failure_Risk"]),
                     "ATH_Persistence": int(row["Persist"]),
@@ -555,7 +562,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                     "Ticker": ticker.replace(".NS", ""),
                     "Pop Date": event_date.date(),
                     "Pop_Event_Price": row["Close"],
-                    "LTP": df.iloc[-1]['Close'],
+                    "LTP": current_ltp,
                     "Pop_Vol_Expansion": round(row["Vol_Exp"], 2),
                     "Pop_Failure_Risk": int(row["Failure_Risk"]),
                     "Pop_Persistence": int(row["Persist"]),
@@ -585,7 +592,7 @@ def scan_stocks(tickers, start_date, end_date, progress_bar, status_text):
                         "Ticker": ticker.replace(".NS", ""),
                         "Stage2 Date": event_date.date(),
                         "S2_Event_Price": row["Close"],
-                        "LTP": df.iloc[-1]['Close'],
+                        "LTP": current_ltp,
                         "S2_Vol_Expansion": round(row["Vol_Exp"], 2),
                         "S2_Failure_Risk": int(row["Failure_Risk"]),
                         "S2_Persistence": int(row["Persist"]),
